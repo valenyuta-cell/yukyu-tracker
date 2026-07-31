@@ -6,7 +6,7 @@
 // JST の 0〜9時に「前日」が算出される。4月1日の朝に「まだ失効しません」と嘘をつく事故を
 // 構造的に防ぐため、Date は UI 層（index.html の todayInTokyo）だけで使う。
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 export const SCHEMA_VERSION = 1;
 
 // ── 勤務先の就業規則に基づく定数（条項との対応は 根拠メモ.local.md。gitには含めない） ──
@@ -311,7 +311,17 @@ export function replay(state, today) {
   const plannedEntries = entries.filter(
     (e) => compareDate(e.date, today) > 0 && compareDate(e.date, expiryDate) < 0
   );
-  for (const e of plannedEntries) applyConsume(projected, e, []);
+  // 予定を1件ずつ消化しながら、その時点の残高を控える。
+  // 履歴の予定行に「この休みを取ったら残いくつになるか」を出すために使う。
+  const plannedTimeline = [];
+  for (const e of plannedEntries) {
+    applyConsume(projected, e, []);
+    plannedTimeline.push({
+      id: e.id,
+      date: e.date,
+      totalMinutes: projected.currentMinutes + projected.carryoverMinutes,
+    });
+  }
 
   const fy = fiscalYearOf(today);
   const { start, end } = fiscalYearRange(fy);
@@ -336,6 +346,11 @@ export function replay(state, today) {
     lastUsableDate: lastUsableDateFor(expiryDate),
     expiringMinutes: Math.max(0, bal.carryoverMinutes),
     projectedExpiringMinutes: Math.max(0, projected.carryoverMinutes),
+    // 未来日付で登録済みの「予定」。horizon は次の失効日の前日で、
+    // 付与日をまたぐ予定は含めない（付与と失効を挟むと単純な引き算にならないため）。
+    plannedCount: plannedEntries.length,
+    plannedMinutes: plannedEntries.reduce((s, e) => s + e.minutes, 0),
+    plannedTimeline,
     hourlyRemainingMinutes: HOURLY_CAP_MINUTES - bal.hourlyUsedMinutes,
     statutory: {
       takenDays,

@@ -393,3 +393,46 @@ test('29. 棚卸しより前の記録は法定カウントにも二重計上し�
   assert.equal(v.statutory.takenDays, 8.5);
   assert.ok(v.warnings.some((w) => w.code === 'pre-baseline'));
 });
+
+test('30. 未来の予定は今の残高を動かさず、予定を引いた見通しとして返る', () => {
+  const st = state({
+    date: '2026-07-31',
+    cur: D(11.5),
+    carry: 0,
+    history: [entry('2026-08-12', 'full'), entry('2026-09-04', 'half-am')],
+  });
+  const v = replay(st, '2026-07-31');
+
+  // 今の残は動かない
+  assert.equal(v.asOf.totalMinutes, D(11.5));
+  // 予定は件数・分数・消化後の残として別に返る
+  assert.equal(v.plannedCount, 2);
+  assert.equal(v.plannedMinutes, D(1.5));
+  assert.equal(v.projected.totalMinutes, D(10));
+
+  // 各予定を消化した時点の残高が順に取れる（履歴の予定行に出す用）
+  assert.deepEqual(
+    v.plannedTimeline.map((p) => [p.date, p.totalMinutes]),
+    [['2026-08-12', D(10.5)], ['2026-09-04', D(10)]]
+  );
+
+  // 予定日が来れば同じ記録が asOf 側に移り、予定は空になる
+  const later = replay(st, '2026-09-30');
+  assert.equal(later.asOf.totalMinutes, D(10));
+  assert.equal(later.plannedCount, 0);
+  assert.equal(later.plannedTimeline.length, 0);
+});
+
+test('31. 付与日をまたぐ予定は予定の見通しに含めない', () => {
+  const st = state({
+    date: '2027-03-01',
+    cur: D(5),
+    carry: D(2),
+    history: [entry('2027-03-10', 'full'), entry('2027-05-20', 'full')],
+  });
+  const v = replay(st, '2027-03-01');
+  // 3/10 のみ。4/1 をまたぐ 5/20 は付与と失効を挟むので単純な引き算にならない
+  assert.equal(v.plannedCount, 1);
+  assert.equal(v.plannedMinutes, D(1));
+  assert.equal(v.projected.totalMinutes, D(6));
+});
