@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="有休">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<title>有休管理</title>
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+  --accent:#1d4ed8; --amber:#b45309; --red:#b91c1c; --amber-bg:#fef3c7; --red-bg:#fee2e2;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f172a; --card:#1e293b; --fg:#f1f5f9; --muted:#94a3b8; --line:#334155;
+    --accent:#60a5fa; --amber:#fbbf24; --red:#f87171; --amber-bg:#422006; --red-bg:#450a0a;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  font-size:16px; line-height:1.5;
+  overscroll-behavior-y:contain;              /* 下スワイプで入力中の内容ごとリロードされるのを防ぐ */
+  padding-bottom:env(safe-area-inset-bottom);
+}
+header{padding:calc(env(safe-area-inset-top) + 20px) 16px 8px}
+main{padding:0 16px 32px}
+h2{font-size:15px; color:var(--muted); margin:24px 0 8px; font-weight:600}
+.card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px}
+.total{font-size:40px; font-weight:700; letter-spacing:-.02em; margin:0 0 12px}
+.total small{font-size:16px; font-weight:500; color:var(--muted); margin-right:8px}
+.row{display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-top:1px solid var(--line); font-size:15px}
+.row:first-child{border-top:0}
+.row .k{color:var(--muted); white-space:nowrap}   /* 375px幅で「繰越」が2行に割れるのを防ぐ */
+.row .v{font-variant-numeric:tabular-nums; text-align:right}
+.row .v small{display:block; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums}
+.row.warn{color:var(--amber)} .row.danger{color:var(--red); font-weight:600}
+.muted{color:var(--muted); font-size:13px}
+.banner{background:var(--amber-bg); border:1px solid var(--amber); color:var(--amber);
+  border-radius:12px; padding:12px 14px; margin-bottom:14px; font-size:14px;
+  display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
+.banner button{min-width:44px; min-height:44px; white-space:nowrap}
+.chips{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px}
+.chips.grid2 .chip{flex:1 1 calc(50% - 4px)}   /* 4択は狭い画面で2×2に */
+.chip{
+  flex:1 1 auto; min-height:44px; padding:10px 12px; border-radius:10px; font-size:15px;
+  background:var(--bg); color:var(--fg); border:1px solid var(--line); cursor:pointer;
+}
+.chip[aria-pressed="true"]{background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600}
+label{display:block; font-size:13px; color:var(--muted); margin:12px 0 6px}
+input[type=date],input[type=number],textarea,select{
+  width:100%; font-size:16px;                 /* 16px 未満だと iOS でフォーカス時に自動ズームする */
+  padding:11px 12px; border-radius:10px; border:1px solid var(--line);
+  background:var(--bg); color:var(--fg); font-family:inherit; min-height:44px;
+}
+textarea{min-height:120px; font-size:13px; font-family:ui-monospace,Menlo,monospace}
+button{
+  font-family:inherit; font-size:15px; border-radius:10px; border:1px solid var(--line);
+  background:var(--card); color:var(--fg); padding:10px 14px; min-height:44px; cursor:pointer;
+}
+button.primary{background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; width:100%; margin-top:14px}
+button.danger{color:var(--red); border-color:var(--red)}
+button.link{background:none; border:0; color:var(--accent); padding:6px 8px; text-decoration:underline}
+.hist{list-style:none; margin:0; padding:0}
+.hist li{display:flex; justify-content:space-between; align-items:center; gap:10px;
+  padding:11px 0; border-bottom:1px solid var(--line); font-size:15px}
+.hist li.divider{color:var(--muted); font-size:12px; justify-content:center; border-bottom:0;
+  border-top:2px dashed var(--line); margin-top:6px; padding-top:10px; text-align:center; display:block}
+.hist li.pre{opacity:.45}
+.hist li.roll{color:var(--muted); font-size:14px}
+.hist .date{font-variant-numeric:tabular-nums; color:var(--muted); font-size:13px; min-width:88px}
+.hist .body{flex:1}
+.hist .del{min-width:44px; min-height:44px; border:0; background:none; color:var(--muted); font-size:18px}
+.badge{font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); margin-left:6px}
+.sheet{position:fixed; inset:0; background:var(--bg); z-index:50; overflow-y:auto; -webkit-overflow-scrolling:touch}
+.sheet-head{position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line);
+  padding:calc(env(safe-area-inset-top) + 8px) 16px 8px; display:flex; justify-content:space-between; align-items:center}
+.sheet-body{padding:16px 16px calc(env(safe-area-inset-bottom) + 48px)}
+.toast{position:fixed; left:16px; right:16px; bottom:calc(env(safe-area-inset-bottom) + 16px);
+  background:var(--fg); color:var(--bg); border-radius:12px; padding:12px 14px; z-index:60;
+  display:flex; justify-content:space-between; align-items:center; gap:12px; font-size:14px}
+.toast button{background:none; border:0; color:var(--bg); text-decoration:underline; font-weight:600; min-height:44px}
+footer{padding:0 16px calc(env(safe-area-inset-bottom) + 24px); color:var(--muted); font-size:12px;
+  display:flex; justify-content:space-between; align-items:center}
+.warnbox{background:var(--red-bg); border:1px solid var(--red); color:var(--red);
+  border-radius:10px; padding:10px 12px; font-size:13px; margin-top:10px}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="banner" id="banner" hidden>
+    <span id="bannerText"></span>
+    <button class="link" id="bannerClose" style="color:inherit">閉じる</button>
+  </div>
+  <div class="card">
+    <div class="total" id="total"><small>残</small>—</div>
+    <div class="row" id="rowExpiry"><span class="k">繰越</span><span class="v"></span></div>
+    <div class="row" id="rowCurrent"><span class="k">当年</span><span class="v"></span></div>
+    <div class="row" id="rowStatutory"><span class="k">法定取得</span><span class="v"></span></div>
+    <div class="row" id="rowHourly"><span class="k">時間単位</span><span class="v"></span></div>
+    <div class="row" id="rowStocktake"><span class="k">最終棚卸し</span><span class="v"></span></div>
+  </div>
+  <div class="warnbox" id="warnbox" hidden></div>
+</header>
+
+<main>
+  <h2>休みを記録</h2>
+  <div class="card">
+    <div class="chips" id="dateChips">
+      <button class="chip" data-off="0">今日</button>
+      <button class="chip" data-off="-1">昨日</button>
+      <button class="chip" data-off="1">明日</button>
+    </div>
+    <input type="date" id="date">
+
+    <label>種別</label>
+    <div class="chips grid2" id="kindChips">
+      <button class="chip" data-kind="full" aria-pressed="true">全日</button>
+      <button class="chip" data-kind="half-am">午前半休</button>
+      <button class="chip" data-kind="half-pm">午後半休</button>
+      <button class="chip" data-kind="hourly">時間単位</button>
+    </div>
+
+    <div id="hourWrap" hidden>
+      <label>時間数（年5日＝40時間の枠を消費します）</label>
+      <div class="chips" id="hourChips">
+        <button class="chip" data-h="1">1時間</button>
+        <button class="chip" data-h="2" aria-pressed="true">2時間</button>
+        <button class="chip" data-h="3">3時間</button>
+        <button class="chip" data-h="4">4時間</button>
+      </div>
+    </div>
+
+    <button class="link" id="memoToggle" style="padding-left:0">メモを追加</button>
+    <input type="text" id="memo" placeholder="メモ" hidden
+           style="width:100%;font-size:16px;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg);min-height:44px">
+
+    <button class="primary" id="save">記録する</button>
+  </div>
+
+  <h2>履歴</h2>
+  <ul class="hist" id="hist"></ul>
+</main>
+
+<footer>
+  <span id="version"></span>
+  <button class="link" id="openSettings">設定</button>
+</footer>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-head">
+    <strong>設定</strong>
+    <button class="link" id="closeSettings">完了</button>
+  </div>
+  <div class="sheet-body">
+    <h2 style="margin-top:0">棚卸し</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">
+        会社の勤怠システムを見て、残高を実測値で上書きします。
+        <strong>代休・特別休暇・リフレッシュ休暇は含めないこと</strong>（別制度で失効日が異なります）。
+      </p>
+      <label>基準日</label><input type="date" id="stDate">
+      <label>当年分（日）</label><input type="number" id="stCurrent" step="0.5" min="0">
+      <label>繰越分（日）</label><input type="number" id="stCarry" step="0.5" min="0">
+      <label>今年度すでに取った時間単位年休（時間）</label><input type="number" id="stHourly" step="1" min="0">
+      <div class="card" style="margin-top:12px;background:var(--bg)">
+        <div class="muted">実行するとこうなります</div>
+        <div id="stPreview" style="font-weight:600">—</div>
+      </div>
+      <button class="primary" id="stApply">この値で上書きする</button>
+      <button id="stUndo" style="width:100%;margin-top:8px" hidden>直前の棚卸しを取り消す</button>
+    </div>
+
+    <h2>バックアップ</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">
+        iOSはWebアプリのデータを削除することがあります。棚卸しの後は必ずコピーして、
+        メモアプリなどに貼り付けて保管してください。
+      </p>
+      <textarea id="dump" readonly></textarea>
+      <button id="copy" style="width:100%;margin-top:8px">コピーする</button>
+      <label>貼り付けて復元</label>
+      <textarea id="restoreBox" placeholder="バックアップしたJSONを貼り付け"></textarea>
+      <button class="danger" id="restore" style="width:100%;margin-top:8px">この内容で復元する（現在のデータは消えます）</button>
+    </div>
+
+    <h2>アプリ</h2>
+    <div class="card">
+      <div class="row"><span class="k">バージョン</span><span class="v" id="ver2"></span></div>
+      <button id="checkUpdate" style="width:100%;margin-top:12px">更新を確認する</button>
+      <button id="clearCache" style="width:100%;margin-top:8px">キャッシュを削除する（データは消えません）</button>
+    </div>
+
+    <h2>計算の前提（就業規則）</h2>
+    <div class="card muted">
+      基準日 4月1日／年間付与 20日／有休1日＝8時間（半休4時間）／時間単位年休は年5日＝40時間・1時間単位／
+      繰越上限 20日／消化は繰越分から／繰越分は4月1日に失効＝使えるのは3月31日まで。
+      これらは <code>core.js</code> の定数です。
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden><span id="toastText"></span><button id="toastAction" hidden></button></div>
+
+<script type="module">
+import {
+  VERSION, DAY_MINUTES, HOURLY_CAP_MINUTES, ANNUAL_GRANT_MINUTES,
+  replay, normalizeState, emptyState, makeEntry, formatMinutes, formatDays,
+  addDays, daysBetween, compareDate, KIND_LABEL, KIND_MINUTES,
+} from './core.js';
+
+const KEY = 'yukyu.v1';
+const $ = (id) => document.getElementById(id);
+
+/* 「今日」の生成は UI 層のここだけ。toISOString() は UTC の日付を返し、JST の 0〜9時に前日を
+   返すため使わない。sv-SE ロケールは YYYY-MM-DD 形式を返す。 */
+const todayInTokyo = () =>
+  new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
+
+let TODAY = todayInTokyo();
+let state = null;
+let readOnly = false;
+let view = null;
+let undoAction = null;
+
+/* ───────── 永続化 ───────── */
+
+function load() {
+  const raw = localStorage.getItem(KEY);
+  if (!raw) return { state: emptyState(TODAY), fresh: true };
+  try {
+    const st = normalizeState(JSON.parse(raw));
+    return { state: st, fresh: false };
+  } catch (e) {
+    alert('保存データを読めませんでした。設定＞バックアップから復元してください。\n\n' + e.message);
+    return { state: emptyState(TODAY), fresh: true, broken: true };
+  }
+}
+
+function save() {
+  if (readOnly) return; // 新しい版で書かれたデータを古い版で壊さない
+  const out = {
+    schemaVersion: state.schemaVersion,
+    baseline: state.baseline,
+    prevBaseline: state.prevBaseline,
+    history: state.history,
+    lastSeenDate: state.lastSeenDate,
+  };
+  const text = JSON.stringify(out);
+  localStorage.setItem(KEY, text);
+  if (localStorage.getItem(KEY) !== text) {
+    alert('保存に失敗しました（ストレージ容量またはプライベートモード）。バックアップを取ってください。');
+  }
+}
+
+/* ───────── 描画 ───────── */
+
+function render() {
+  view = replay(state, TODAY);
+  const a = view.asOf;
+
+  $('total').innerHTML = '<small>残</small>' + formatMinutes(a.totalMinutes);
+
+  const daysLeft = daysBetween(TODAY, view.lastUsableDate);
+  const rowE = $('rowExpiry');
+  rowE.classList.remove('warn', 'danger');
+  if (view.expiringMinutes > 0) {
+    rowE.hidden = false;
+    let txt = formatMinutes(view.expiringMinutes) + ' — ' + jp(view.lastUsableDate) + 'まで（あと' + daysLeft + '日）';
+    if (view.projectedExpiringMinutes !== view.expiringMinutes) {
+      txt += '<small>登録済みの予定を引くと ' + formatMinutes(view.projectedExpiringMinutes) + '</small>';
+    }
+    rowE.querySelector('.v').innerHTML = txt;
+    if (daysLeft <= 30) rowE.classList.add('danger');
+    else if (daysLeft <= 90) rowE.classList.add('warn');
+  } else {
+    rowE.hidden = true;
+  }
+
+  $('rowCurrent').querySelector('.v').textContent = formatMinutes(a.currentMinutes);
+
+  const s = view.statutory;
+  $('rowStatutory').querySelector('.v').textContent =
+    s.takenDays + '日' + (s.plannedDays ? '（＋予定' + s.plannedDays + '日）' : '') +
+    ' / ' + s.requiredDays + '日　期限 ' + jp(s.deadline);
+
+  $('rowHourly').querySelector('.v').textContent =
+    '残 ' + Math.round(view.hourlyRemainingMinutes / 60) + '時間 / ' + (HOURLY_CAP_MINUTES / 60) + '時間';
+
+  const stDays = daysBetween(state.baseline.date, TODAY);
+  const rowS = $('rowStocktake');
+  rowS.classList.toggle('warn', stDays > 90);
+  rowS.querySelector('.v').textContent =
+    jp(state.baseline.date) + '（' + stDays + '日前）' + (stDays > 90 ? ' 要確認' : '');
+
+  renderBanner();
+  renderWarnings();
+  renderHistory();
+}
+
+function renderBanner() {
+  const recent = view.events.filter((ev) => compareDate(ev.date, state.lastSeenDate) > 0);
+  if (recent.length === 0 || readOnly) { $('banner').hidden = true; return; }
+  const grant = recent.reduce((n, e) => n + e.grantMinutes, 0);
+  const exp = recent.reduce((n, e) => n + e.expiredMinutes, 0);
+  const y = recent[recent.length - 1].date.slice(0, 4);
+  $('bannerText').textContent =
+    y + '年度に更新されました　付与 +' + formatMinutes(grant) + ' / 失効 −' + formatMinutes(exp);
+  $('banner').hidden = false;
+}
+
+function renderWarnings() {
+  const w = view.warnings;
+  const msgs = [];
+  if (w.some((x) => x.code === 'negative-balance')) msgs.push('残高がマイナスです。記録漏れか、棚卸しの値が実態とずれています。');
+  if (w.some((x) => x.code === 'hourly-cap-exceeded')) msgs.push('時間単位年休が年5日＝40時間の上限を超えています。');
+  if (w.some((x) => x.code === 'hourly-not-unit')) msgs.push('1時間単位でない時間単位年休の記録があります（規程）。');
+  const pre = w.filter((x) => x.code === 'pre-baseline').length;
+  if (pre) msgs.push(pre + '件の記録が棚卸しより前の日付のため、残高計算に含まれていません。');
+  $('warnbox').hidden = msgs.length === 0;
+  $('warnbox').innerHTML = msgs.join('<br>');
+}
+
+function renderHistory() {
+  const items = [];
+  for (const e of state.history) {
+    items.push({ kind: 'entry', date: e.date, e });
+  }
+  for (const ev of view.events) {
+    items.push({ kind: 'roll', date: ev.date, ev });
+  }
+  items.sort((x, y) => compareDate(y.date, x.date) || 0);
+
+  const ul = $('hist');
+  ul.innerHTML = '';
+  let dividerPlaced = false;
+
+  if (items.length === 0) {
+    ul.innerHTML = '<li class="muted" style="justify-content:center">まだ記録がありません</li>';
+    return;
+  }
+
+  for (const it of items) {
+    if (!dividerPlaced && compareDate(it.date, state.baseline.date) < 0) {
+      const d = document.createElement('li');
+      d.className = 'divider';
+      d.textContent = '━ 棚卸し ' + jp(state.baseline.date) + '（ここより前は残高計算に含みません）';
+      ul.appendChild(d);
+      dividerPlaced = true;
+    }
+    ul.appendChild(it.kind === 'roll' ? rollRow(it.ev) : entryRow(it.e));
+  }
+  if (!dividerPlaced) {
+    const d = document.createElement('li');
+    d.className = 'divider';
+    d.textContent = '━ 棚卸し ' + jp(state.baseline.date);
+    ul.appendChild(d);
+  }
+}
+
+function rollRow(ev) {
+  const li = document.createElement('li');
+  li.className = 'roll';
+  const y = ev.date.slice(0, 4);
+  li.innerHTML =
+    '<span class="date">' + jp(ev.date) + '</span>' +
+    '<span class="body">' + y + '年度　付与 +' + formatMinutes(ev.grantMinutes) +
+    '・失効 −' + formatMinutes(ev.expiredMinutes) + '</span>';
+  return li; // 自動生成なので削除ボタンは付けない
+}
+
+function entryRow(e) {
+  const li = document.createElement('li');
+  const isPre = compareDate(e.date, state.baseline.date) < 0;
+  const isFuture = compareDate(e.date, TODAY) > 0;
+  if (isPre) li.className = 'pre';
+  const label = KIND_LABEL[e.kind] + (e.kind === 'hourly' ? ' ' + e.minutes / 60 + '時間' : '');
+  li.innerHTML =
+    '<span class="date">' + jp(e.date) + '</span>' +
+    '<span class="body">' + esc(label) +
+    (isFuture ? '<span class="badge">予定</span>' : '') +
+    (isPre ? '<span class="badge">計算対象外</span>' : '') +
+    (e.note ? '<br><span class="muted">' + esc(e.note) + '</span>' : '') +
+    '</span>' +
+    '<span class="v" style="color:var(--muted)">−' + formatMinutes(e.minutes) + '</span>';
+  const del = document.createElement('button');
+  del.className = 'del';
+  del.textContent = '✕';
+  del.setAttribute('aria-label', '削除');
+  del.onclick = () => removeEntry(e.id);
+  li.appendChild(del);
+  return li;
+}
+
+const jp = (d) => d.slice(0, 4) + '/' + d.slice(5, 7) + '/' + d.slice(8, 10);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* ───────── 操作 ───────── */
+
+function toast(text, actionLabel, action) {
+  $('toastText').textContent = text;
+  const btn = $('toastAction');
+  btn.hidden = !actionLabel;
+  btn.textContent = actionLabel || '';
+  undoAction = action || null;
+  $('toast').hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { $('toast').hidden = true; undoAction = null; }, 8000);
+}
+
+$('toastAction').onclick = () => {
+  if (undoAction) undoAction();
+  $('toast').hidden = true;
+  undoAction = null;
+};
+
+let pickedKind = 'full';
+let pickedHours = 2;
+
+function setPressed(container, matchFn) {
+  for (const b of container.querySelectorAll('.chip')) {
+    b.setAttribute('aria-pressed', matchFn(b) ? 'true' : 'false');
+  }
+}
+
+$('dateChips').onclick = (ev) => {
+  const b = ev.target.closest('.chip');
+  if (!b) return;
+  $('date').value = addDays(TODAY, Number(b.dataset.off));
+  setPressed($('dateChips'), (x) => x === b);
+};
+
+$('date').oninput = () => setPressed($('dateChips'), () => false);
+
+$('kindChips').onclick = (ev) => {
+  const b = ev.target.closest('.chip');
+  if (!b) return;
+  pickedKind = b.dataset.kind;
+  setPressed($('kindChips'), (x) => x === b);
+  $('hourWrap').hidden = pickedKind !== 'hourly';
+};
+
+$('hourChips').onclick = (ev) => {
+  const b = ev.target.closest('.chip');
+  if (!b) return;
+  pickedHours = Number(b.dataset.h);
+  setPressed($('hourChips'), (x) => x === b);
+};
+
+$('memoToggle').onclick = () => {
+  const m = $('memo');
+  m.hidden = !m.hidden;
+  $('memoToggle').textContent = m.hidden ? 'メモを追加' : 'メモを閉じる';
+  if (!m.hidden) m.focus();
+};
+
+$('save').onclick = () => {
+  if (readOnly) return alert('新しいバージョンのデータのため、このアプリからは変更できません。');
+  const date = $('date').value;
+  if (!date) return alert('日付を選んでください。');
+  const entry = makeEntry({
+    id: 'e' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    date, kind: pickedKind, hours: pickedHours, note: $('memo').value,
+  });
+  if (compareDate(date, state.baseline.date) < 0 &&
+      !confirm('この日付は棚卸し（' + jp(state.baseline.date) + '）より前なので、残高計算に含まれません。それでも記録しますか？')) {
+    return;
+  }
+  state.history.push(entry);
+  save();
+  render();
+  $('memo').value = '';
+  toast(KIND_LABEL[entry.kind] + ' ' + formatMinutes(entry.minutes) + 'を記録　残 ' +
+        formatMinutes(view.asOf.totalMinutes), '取り消す', () => removeEntry(entry.id, true));
+};
+
+function removeEntry(id, silent) {
+  const i = state.history.findIndex((e) => e.id === id);
+  if (i < 0) return;
+  const [removed] = state.history.splice(i, 1);
+  save();
+  render();
+  if (!silent) {
+    toast('記録を削除しました', '元に戻す', () => {
+      state.history.push(removed);
+      save(); render();
+    });
+  }
+}
+
+$('bannerClose').onclick = () => {
+  state.lastSeenDate = TODAY;
+  save();
+  $('banner').hidden = true;
+};
+
+/* ───────── 設定 ───────── */
+
+$('openSettings').onclick = () => {
+  fillSettings();
+  $('sheet').hidden = false;
+  $('sheet').scrollTop = 0; // 常に棚卸しから始まるようにする（前回のスクロール位置が残らない）
+};
+$('closeSettings').onclick = () => { $('sheet').hidden = true; render(); };
+
+function fillSettings() {
+  $('stDate').value = TODAY;
+  $('stCurrent').value = view.asOf.currentMinutes / DAY_MINUTES;
+  $('stCarry').value = view.asOf.carryoverMinutes / DAY_MINUTES;
+  $('stHourly').value = view.asOf.hourlyUsedMinutes / 60;
+  $('dump').value = localStorage.getItem(KEY) || '';
+  $('stUndo').hidden = !state.prevBaseline;
+  $('ver2').textContent = VERSION;
+  previewStocktake();
+}
+
+function stocktakeValues() {
+  return {
+    date: $('stDate').value || TODAY,
+    currentMinutes: Math.round(Number($('stCurrent').value || 0) * DAY_MINUTES),
+    carryoverMinutes: Math.round(Number($('stCarry').value || 0) * DAY_MINUTES),
+    hourlyUsedMinutes: Math.round(Number($('stHourly').value || 0) * 60),
+  };
+}
+
+function previewStocktake() {
+  const b = stocktakeValues();
+  const after = replay({ ...state, baseline: b, history: state.history }, TODAY);
+  $('stPreview').textContent =
+    '現在 残' + formatMinutes(view.asOf.totalMinutes) +
+    ' → 実行後 残' + formatMinutes(after.asOf.totalMinutes);
+}
+
+for (const id of ['stDate', 'stCurrent', 'stCarry', 'stHourly']) $(id).oninput = previewStocktake;
+
+$('stApply').onclick = () => {
+  const b = stocktakeValues();
+  if (!confirm('残高を上書きします。よろしいですか？\n\n' + $('stPreview').textContent)) return;
+  state.prevBaseline = state.baseline;
+  state.baseline = b;
+  save();
+  render();
+  fillSettings();
+  toast('棚卸しを反映しました', '元に戻す', () => {
+    state.baseline = state.prevBaseline;
+    state.prevBaseline = null;
+    save(); render(); fillSettings();
+  });
+};
+
+$('stUndo').onclick = () => {
+  if (!state.prevBaseline) return;
+  state.baseline = state.prevBaseline;
+  state.prevBaseline = null;
+  save(); render(); fillSettings();
+};
+
+$('copy').onclick = async () => {
+  const text = $('dump').value;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('コピーしました。メモアプリなどに貼り付けて保管してください。');
+  } catch (e) {
+    $('dump').select();
+    toast('選択しました。長押しでコピーしてください。');
+  }
+};
+
+$('restore').onclick = () => {
+  const text = $('restoreBox').value.trim();
+  if (!text) return;
+  let parsed;
+  try {
+    parsed = normalizeState(JSON.parse(text));
+  } catch (e) {
+    return alert('読み込めませんでした: ' + e.message);
+  }
+  if (!confirm('現在のデータを、貼り付けた内容で置き換えます。よろしいですか？')) return;
+  state = parsed;
+  readOnly = state.readOnly;
+  save();
+  render();
+  fillSettings();
+  $('restoreBox').value = '';
+  toast('復元しました');
+};
+
+$('checkUpdate').onclick = async () => {
+  const reg = await navigator.serviceWorker?.getRegistration();
+  if (reg) await reg.update();
+  location.reload();
+};
+
+$('clearCache').onclick = async () => {
+  if (!confirm('キャッシュを削除して読み込み直します。保存データ（残高・履歴）は消えません。')) return;
+  const keys = await caches.keys();
+  await Promise.all(keys.map((k) => caches.delete(k)));
+  location.reload();
+};
+
+/* ───────── 起動 ───────── */
+
+const loaded = load();
+state = loaded.state;
+readOnly = !!state.readOnly;
+$('version').textContent = 'v' + VERSION + (readOnly ? '（読み取り専用）' : '');
+$('date').value = TODAY;
+setPressed($('dateChips'), (b) => b.dataset.off === '0');
+render();
+
+if (loaded.fresh && !loaded.broken) {
+  toast('まず設定＞棚卸しで、いまの残日数を入れてください', '設定を開く', () => {
+    fillSettings(); $('sheet').hidden = false;
+  });
+}
+
+// 日付が変わったまま開きっぱなしになっている場合に備えて再評価する
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  const t = todayInTokyo();
+  if (t !== TODAY) { TODAY = t; render(); }
+});
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).catch(() => {});
+}
+</script>
+</body>
+</html>
