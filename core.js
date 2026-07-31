@@ -6,7 +6,7 @@
 // JST の 0〜9時に「前日」が算出される。4月1日の朝に「まだ失効しません」と嘘をつく事故を
 // 構造的に防ぐため、Date は UI 層（index.html の todayInTokyo）だけで使う。
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 export const SCHEMA_VERSION = 1;
 
 // ── 勤務先の就業規則に基づく定数（条項との対応は 根拠メモ.local.md。gitには含めない） ──
@@ -127,10 +127,23 @@ const toInt = (v, fallback) => {
   return Number.isFinite(n) ? Math.round(n) : fallback;
 };
 
+// 法定取得日数は半休を 0.5 日と数えるため、整数に丸めず 0.5 刻みに寄せる。
+const toHalf = (v, fallback) => {
+  if (v === '' || v === null || v === undefined) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 2) / 2 : fallback;
+};
+
 export function emptyState(today) {
   return {
     schemaVersion: SCHEMA_VERSION,
-    baseline: { date: today, currentMinutes: 0, carryoverMinutes: 0, hourlyUsedMinutes: 0 },
+    baseline: {
+      date: today,
+      currentMinutes: 0,
+      carryoverMinutes: 0,
+      hourlyUsedMinutes: 0,
+      statutoryTakenDays: 0,
+    },
     prevBaseline: null,
     history: [],
     lastSeenDate: today,
@@ -156,6 +169,9 @@ export function normalizeState(raw) {
     currentMinutes: toInt(b.currentMinutes, 0),
     carryoverMinutes: toInt(b.carryoverMinutes, 0),
     hourlyUsedMinutes: toInt(b.hourlyUsedMinutes, 0),
+    // 棚卸し時点で、その年度に既に取得済みの法定日数。履歴を持たない過去の取得分を
+    // 法定5日カウントに反映するための項目（半休 0.5 日があるので整数に丸めない）。
+    statutoryTakenDays: toHalf(b.statutoryTakenDays, 0),
   };
 
   const history = (Array.isArray(raw.history) ? raw.history : [])
@@ -299,9 +315,14 @@ export function replay(state, today) {
 
   const fy = fiscalYearOf(today);
   const { start, end } = fiscalYearRange(fy);
-  let takenDays = 0;
+  // 棚卸しが同じ年度内にあるときだけ、棚卸し時点までの取得実績を初期値にする。
+  // 年度をまたいだ値を持ち越すと、新年度の5日カウントが最初から埋まった状態になる。
+  // 集計対象は entries（棚卸しより前を除外済み）。st.history をそのまま使うと、
+  // 残高計算では無視した棚卸し前の記録が法定カウントにだけ二重に乗る。
+  let takenDays =
+    fiscalYearOf(st.baseline.date) === fy ? (st.baseline.statutoryTakenDays ?? 0) : 0;
   let plannedDays = 0;
-  for (const e of st.history) {
+  for (const e of entries) {
     if (compareDate(e.date, start) < 0 || compareDate(e.date, end) > 0) continue;
     const v = STATUTORY_DAY_VALUE[e.kind] ?? 0;
     if (compareDate(e.date, today) <= 0) takenDays += v;

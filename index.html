@@ -172,6 +172,10 @@ footer{padding:0 16px calc(env(safe-area-inset-bottom) + 24px); color:var(--mute
       <label>当年分（日）</label><input type="number" id="stCurrent" step="0.5" min="0">
       <label>繰越分（日）</label><input type="number" id="stCarry" step="0.5" min="0">
       <label>今年度すでに取った時間単位年休（時間）</label><input type="number" id="stHourly" step="1" min="0">
+      <label>今年度すでに取った日数（法定5日の判定用）</label><input type="number" id="stStatutory" step="0.5" min="0">
+      <div class="muted" style="margin-top:-4px;font-size:13px">
+        4月以降に取った全日・半休の合計（半休は0.5日）。時間単位年休は数えません。
+      </div>
       <div class="card" style="margin-top:12px;background:var(--bg)">
         <div class="muted">実行するとこうなります</div>
         <div id="stPreview" style="font-weight:600">—</div>
@@ -517,6 +521,7 @@ function fillSettings() {
   $('stCurrent').value = view.asOf.currentMinutes / DAY_MINUTES;
   $('stCarry').value = view.asOf.carryoverMinutes / DAY_MINUTES;
   $('stHourly').value = view.asOf.hourlyUsedMinutes / 60;
+  $('stStatutory').value = view.statutory.takenDays;
   $('dump').value = localStorage.getItem(KEY) || '';
   $('stUndo').hidden = !state.prevBaseline;
   $('ver2').textContent = VERSION;
@@ -529,6 +534,7 @@ function stocktakeValues() {
     currentMinutes: Math.round(Number($('stCurrent').value || 0) * DAY_MINUTES),
     carryoverMinutes: Math.round(Number($('stCarry').value || 0) * DAY_MINUTES),
     hourlyUsedMinutes: Math.round(Number($('stHourly').value || 0) * 60),
+    statutoryTakenDays: Math.round(Number($('stStatutory').value || 0) * 2) / 2,
   };
 }
 

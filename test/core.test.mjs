@@ -23,10 +23,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const D = (n) => n * DAY_MINUTES;
 
-function state({ date, cur, carry, hourly = 0, history = [] }) {
+function state({ date, cur, carry, hourly = 0, statutory = 0, history = [] }) {
   return {
     schemaVersion: 1,
-    baseline: { date, currentMinutes: cur, carryoverMinutes: carry, hourlyUsedMinutes: hourly },
+    baseline: {
+      date,
+      currentMinutes: cur,
+      carryoverMinutes: carry,
+      hourlyUsedMinutes: hourly,
+      statutoryTakenDays: statutory,
+    },
     prevBaseline: null,
     history,
     lastSeenDate: date,
@@ -354,3 +360,36 @@ test('24. index.html は日付生成に Asia/Tokyo を明示し、toISOString �
 function stripComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
+
+test('27. 棚卸しの statutoryTakenDays が法定5日カウントの初期値になる', () => {
+  // 履歴を持たない棚卸し前の取得分を、法定カウントに反映できること。
+  const st = state({ date: '2026-07-31', cur: 5520, carry: 0, statutory: 8.5 });
+  assert.equal(replay(st, '2026-07-31').statutory.takenDays, 8.5);
+
+  // 棚卸し後の記録は積み上がる（全日1 + 半休0.5）。
+  st.history = [entry('2026-08-12', 'full'), entry('2026-08-13', 'half-am')];
+  assert.equal(replay(st, '2026-08-31').statutory.takenDays, 10);
+
+  // 時間単位年休は法定カウントに算入しない。
+  st.history.push(entry('2026-08-14', 'hourly', 2));
+  assert.equal(replay(st, '2026-08-31').statutory.takenDays, 10);
+});
+
+test('28. 年度をまたぐと棚卸しの statutoryTakenDays は持ち越さない', () => {
+  const st = state({ date: '2026-07-31', cur: 5520, carry: 0, statutory: 8.5 });
+  assert.equal(replay(st, '2027-03-31').statutory.takenDays, 8.5);
+  assert.equal(replay(st, '2027-04-01').statutory.takenDays, 0);
+});
+
+test('29. 棚卸しより前の記録は法定カウントにも二重計上しない', () => {
+  const st = state({
+    date: '2026-07-31',
+    cur: 5520,
+    carry: 0,
+    statutory: 8.5,
+    history: [entry('2026-06-10', 'full')],
+  });
+  const v = replay(st, '2026-07-31');
+  assert.equal(v.statutory.takenDays, 8.5);
+  assert.ok(v.warnings.some((w) => w.code === 'pre-baseline'));
+});
