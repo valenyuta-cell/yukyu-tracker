@@ -118,9 +118,24 @@ export function formatMinutes(m) {
  * 休みの量（増減）を「1日」「0.5日」「2時間」形式へ。
  * 半休は会社の勤怠表示と同じく 0.5日 と書く。480分系の桁分解に任せると
  * 半休が「4時間」になり、会社が言う「0.5日」と見た目が食い違う。
+ *
+ * kind に 'hourly' を渡した場合だけは日数へ書き替えない。時間単位年休の4時間を
+ * 「0.5日」と書くと、法定5日取得に1分も算入されない（STATUTORY_DAY_VALUE）のに
+ * 日数で書かれることになり、同じ画面の法定取得の行と矛盾して見える。
  */
-export function formatLeaveAmount(minutes) {
+export function formatLeaveAmount(minutes, kind) {
   const n = Math.round(Number(minutes) || 0);
+  if (kind === 'hourly') {
+    // 8時間ちょうどでも「1日」とは書かない（取ったのは時間単位年休であって1日ではない）
+    const abs = Math.abs(n);
+    const h = Math.floor(abs / 60);
+    const m = abs - h * 60;
+    const parts = [];
+    if (h) parts.push(`${h}時間`);
+    if (m) parts.push(`${m}分`);
+    if (parts.length === 0) parts.push('0時間');
+    return (n < 0 ? '-' : '') + parts.join('');
+  }
   if (n !== 0 && n % HALF_DAY_MINUTES === 0) {
     const d = n / DAY_MINUTES;
     return (Number.isInteger(d) ? String(d) : d.toFixed(1)) + '日';
@@ -138,10 +153,12 @@ export function formatLeaveAmount(minutes) {
  */
 export function formatBalance(minutes, bankMinutes = 0) {
   const n = Math.round(Number(minutes) || 0);
-  if (n < 0) return formatMinutes(n);                 // マイナス残は従来どおり符号付きで出す
+  // マイナス残も履歴行（formatLeaveAmount）と同じ流儀で書く。ここだけ桁分解に落とすと
+  // 「残 -4時間」と出て、まさに今回直した「半休が4時間に見える」表記が戻ってしまう。
+  if (n < 0) return '-' + formatBalance(-n, 0);
   let bank = Math.round(Number(bankMinutes) || 0);
-  if (!Number.isFinite(bank) || bank < 0 || bank >= DAY_MINUTES) bank = 0;
-  if (bank > n) bank = n;                             // 残高より端数が大きい異常値は残高に丸める
+  // 合計行には当年分と繰越分の端数を足して渡すため、上限は1日ではなく2日分で見る。
+  if (!Number.isFinite(bank) || bank < 0 || bank >= 2 * DAY_MINUTES || bank > n) bank = 0;
   // 端数を取り分けた残りを日数へ。ちょうど半日ぶん余ったときだけ 0.5日 と書く
   // （それ以外の端数まで日数側へ寄せると「0.5日1時間」のような読みにくい表記になる）。
   let days = Math.floor((n - bank) / DAY_MINUTES);
@@ -177,12 +194,37 @@ const toHalf = (v, fallback) => {
   return Number.isFinite(n) ? Math.round(n * 2) / 2 : fallback;
 };
 
-// 時間単位年休のために崩した1日の残り。0〜479分へ正規化する。
-const normBank = (v) => {
-  const n = toInt(v, 0);
-  const r = n % DAY_MINUTES;
-  return r < 0 ? r + DAY_MINUTES : r;
-};
+/**
+ * 端数（時間単位年休のために崩した日の残り）を、枠（当年分 or 繰越分）の内訳として整える。
+ *
+ * 枠 M と端数 b の間には必ず次が成り立つ:
+ *   0 ≤ b ≤ M ／ b < 480 ／ b ≡ M (mod 240)
+ * 日数部 (M − b) が 240 の倍数＝0.5日刻みになる、という意味。これが崩れると
+ * formatBalance が存在しない 0.5日 を作り、合計と内訳が食い違う。消費・付与・棚卸しの
+ * あとに必ずこれを通し、壊れていたら最小の候補 (M mod 240) へ落として自己修復する。
+ */
+function normBankIn(frame, bank) {
+  if (!(frame > 0)) return 0;
+  const r = frame % HALF_DAY_MINUTES;
+  const b = toInt(bank, 0);
+  const ok = b >= 0 && b <= frame && b < DAY_MINUTES && b % HALF_DAY_MINUTES === r;
+  return ok ? b : (r <= frame ? r : 0);
+}
+
+/**
+ * 端数が need 分に足りないとき、その枠に無傷で残っている日を崩して端数へ積む。
+ * 崩す単位は1日(480)だが、無傷で残っているのが半日しかなければ半日(240)しか崩せない。
+ * ここを常に480で戻すと、実際には存在しない4時間が端数に湧く。
+ */
+function breakIntoBank(frame, bank, need) {
+  let b = bank;
+  while (b < need && frame - b > 0) {
+    const intact = frame - b;
+    b +=
+      intact >= DAY_MINUTES ? DAY_MINUTES : intact >= HALF_DAY_MINUTES ? HALF_DAY_MINUTES : intact;
+  }
+  return b;
+}
 
 export function emptyState(today) {
   return {
@@ -193,7 +235,8 @@ export function emptyState(today) {
       carryoverMinutes: 0,
       hourlyUsedMinutes: 0,
       statutoryTakenDays: 0,
-      bankMinutes: 0,
+      currentBankMinutes: 0,
+      carryoverBankMinutes: 0,
     },
     prevBaseline: null,
     history: [],
@@ -223,10 +266,12 @@ export function normalizeState(raw) {
     // 棚卸し時点で、その年度に既に取得済みの法定日数。履歴を持たない過去の取得分を
     // 法定5日カウントに反映するための項目（半休 0.5 日があるので整数に丸めない）。
     statutoryTakenDays: toHalf(b.statutoryTakenDays, 0),
-    // 会社の残数表示が「4.5日7時間」のときの「7時間」。残高の内訳であって追加分ではない
-    // （currentMinutes / carryoverMinutes に既に含まれている）。
-    bankMinutes: normBank(b.bankMinutes),
   };
+  // 会社の残数表示が「4.5日7時間」のときの「7時間」。残高の内訳であって追加分ではない
+  // （currentMinutes / carryoverMinutes に既に含まれている）。項目を持たない旧データは
+  // 枠に合わせて自動で埋まり、従来どおりの桁分解表示になる。
+  baseline.currentBankMinutes = normBankIn(baseline.currentMinutes, b.currentBankMinutes);
+  baseline.carryoverBankMinutes = normBankIn(baseline.carryoverMinutes, b.carryoverBankMinutes);
 
   const history = (Array.isArray(raw.history) ? raw.history : [])
     .filter((e) => e && isValidDate(e.date) && KIND_LABEL[e.kind])
@@ -247,7 +292,8 @@ export function normalizeState(raw) {
           carryoverMinutes: toInt(pb.carryoverMinutes, 0),
           hourlyUsedMinutes: toInt(pb.hourlyUsedMinutes, 0),
           statutoryTakenDays: toHalf(pb.statutoryTakenDays, 0),
-          bankMinutes: normBank(pb.bankMinutes),
+          currentBankMinutes: normBankIn(toInt(pb.currentMinutes, 0), pb.currentBankMinutes),
+          carryoverBankMinutes: normBankIn(toInt(pb.carryoverMinutes, 0), pb.carryoverBankMinutes),
         }
       : null;
 
@@ -276,18 +322,15 @@ function applyRollover(bal, gd, events) {
   const carried = Math.min(carryable, CARRYOVER_CAP_MINUTES); // 規程 上限clamp
   const clamped = Math.max(0, carryable - carried);
 
-  bal.carryoverMinutes = carried;
-  bal.currentMinutes = grant;
-  bal.hourlyUsedMinutes = 0;
+  // 繰越分の端数は繰越分ごと失効する。当年分の端数は繰越分へ移るが、上限clampで
+  // 切り捨てられた分（clamped）に端数が含まれていた場合は、その端数も失効している。
+  const carriedBank = clamped > 0 ? 0 : bal.currentBankMinutes;
 
-  // 端数が繰越分にあったなら繰越分と一緒に失効する。当年分にあったなら繰越分へ移る。
-  if (bal.bankSide === 'carryover') {
-    bal.bankMinutes = 0;
-    bal.bankSide = 'current';
-  } else {
-    bal.bankSide = 'carryover';
-    if (bal.bankMinutes > bal.carryoverMinutes) bal.bankMinutes = 0;
-  }
+  bal.carryoverMinutes = carried;
+  bal.carryoverBankMinutes = normBankIn(carried, carriedBank);
+  bal.currentMinutes = grant;
+  bal.currentBankMinutes = 0;          // 付与されたばかりの枠に崩した日は無い
+  bal.hourlyUsedMinutes = 0;
 
   events.push({
     date: gd,
@@ -300,14 +343,9 @@ function applyRollover(bal, gd, events) {
 
 function applyConsume(bal, e, warnings) {
   const min = e.minutes;
-  if (e.kind === 'hourly') {
+  const isHourly = e.kind === 'hourly';
+  if (isHourly) {
     bal.hourlyUsedMinutes += min;
-    // 端数が足りなければ1日を新たに崩す。崩す先は、これから消費する枠（繰越分が先）。
-    if (bal.bankMinutes < min) {
-      bal.bankSide = bal.carryoverMinutes > 0 ? 'carryover' : 'current';
-    }
-    bal.bankMinutes -= min;
-    while (bal.bankMinutes < 0) bal.bankMinutes += DAY_MINUTES;
     if (min % HOURLY_UNIT_MINUTES !== 0) {
       warnings.push({ code: 'hourly-not-unit', id: e.id, date: e.date, minutes: min });
     }
@@ -315,17 +353,29 @@ function applyConsume(bal, e, warnings) {
       warnings.push({ code: 'hourly-cap-exceeded', id: e.id, date: e.date, used: bal.hourlyUsedMinutes });
     }
   }
+
   // 規程 前年度に付与した日数（＝繰越分）から先に消費する
   const fromCarry = Math.max(0, Math.min(bal.carryoverMinutes, min));
-  bal.carryoverMinutes -= fromCarry;
-  bal.currentMinutes -= min - fromCarry;
+  const fromCurrent = min - fromCarry;
+
+  // 端数は枠ごとの内訳なので、引いた枠の端数だけを動かす。引いていない枠には触らない。
+  if (fromCarry > 0) {
+    const bank = isHourly
+      ? breakIntoBank(bal.carryoverMinutes, bal.carryoverBankMinutes, fromCarry) - fromCarry
+      : bal.carryoverBankMinutes;
+    bal.carryoverMinutes -= fromCarry;
+    bal.carryoverBankMinutes = normBankIn(bal.carryoverMinutes, bank);
+  }
+  if (fromCurrent > 0) {
+    const bank = isHourly
+      ? breakIntoBank(bal.currentMinutes, bal.currentBankMinutes, fromCurrent) - fromCurrent
+      : bal.currentBankMinutes;
+    bal.currentMinutes -= fromCurrent;
+    bal.currentBankMinutes = normBankIn(bal.currentMinutes, bank);
+  }
+
   if (bal.currentMinutes < 0) {
     warnings.push({ code: 'negative-balance', id: e.id, date: e.date, currentMinutes: bal.currentMinutes });
-  }
-  // 端数を抱えていた繰越分が尽きたら、端数は当年分の側にある。付与日に失効するかどうかが
-  // ここで変わるので、消費のたびに置き場所を合わせ直す。
-  if (bal.bankMinutes > 0 && bal.bankSide === 'carryover' && bal.carryoverMinutes < bal.bankMinutes) {
-    bal.bankSide = 'current';
   }
 }
 
@@ -333,9 +383,9 @@ const cloneBal = (b) => ({
   currentMinutes: b.currentMinutes,
   carryoverMinutes: b.carryoverMinutes,
   hourlyUsedMinutes: b.hourlyUsedMinutes,
-  // 表示のための内訳。端数がどちらの枠にあるかで、付与日に失効するか繰り越されるかが変わる。
-  bankMinutes: b.bankMinutes ?? 0,
-  bankSide: b.bankSide ?? (b.carryoverMinutes > 0 ? 'carryover' : 'current'),
+  // 表示のための内訳。枠ごとに持つ（どちらの枠の端数かで付与日の扱いが変わるため）。
+  currentBankMinutes: normBankIn(b.currentMinutes, b.currentBankMinutes ?? 0),
+  carryoverBankMinutes: normBankIn(b.carryoverMinutes, b.carryoverBankMinutes ?? 0),
 });
 
 /**
@@ -399,8 +449,7 @@ export function replay(state, today) {
       id: e.id,
       date: e.date,
       totalMinutes: projected.currentMinutes + projected.carryoverMinutes,
-      bankMinutes: projected.bankMinutes,
-      bankSide: projected.bankSide,
+      bankMinutes: projected.currentBankMinutes + projected.carryoverBankMinutes,
     });
   }
 
@@ -421,8 +470,8 @@ export function replay(state, today) {
   }
 
   return {
-    asOf: { ...bal, totalMinutes: bal.currentMinutes + bal.carryoverMinutes },
-    projected: { ...projected, totalMinutes: projected.currentMinutes + projected.carryoverMinutes },
+    asOf: withTotals(bal),
+    projected: withTotals(projected),
     expiryDate,
     lastUsableDate: lastUsableDateFor(expiryDate),
     expiringMinutes: Math.max(0, bal.carryoverMinutes),
@@ -442,6 +491,18 @@ export function replay(state, today) {
     },
     events,
     warnings,
+  };
+}
+
+/**
+ * 合計と、その端数（＝両枠の端数の和）を足した表示用の形にする。
+ * 消費は繰越分が先なので、両枠が同時に端数を持つことはない（＝和は常に1日未満）。
+ */
+function withTotals(bal) {
+  return {
+    ...bal,
+    totalMinutes: bal.currentMinutes + bal.carryoverMinutes,
+    bankMinutes: bal.currentBankMinutes + bal.carryoverBankMinutes,
   };
 }
 

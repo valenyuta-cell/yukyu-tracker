@@ -25,7 +25,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const D = (n) => n * DAY_MINUTES;
 
-function state({ date, cur, carry, hourly = 0, statutory = 0, bank = 0, history = [] }) {
+function state({ date, cur, carry, hourly = 0, statutory = 0, curBank = 0, carryBank = 0, history = [] }) {
   return {
     schemaVersion: 1,
     baseline: {
@@ -34,7 +34,8 @@ function state({ date, cur, carry, hourly = 0, statutory = 0, bank = 0, history 
       carryoverMinutes: carry,
       hourlyUsedMinutes: hourly,
       statutoryTakenDays: statutory,
-      bankMinutes: bank,
+      currentBankMinutes: curBank,
+      carryoverBankMinutes: carryBank,
     },
     prevBaseline: null,
     history,
@@ -296,7 +297,6 @@ test('19. replay の数値出力はすべて整数', () => {
   );
   for (const bucket of [r.asOf, r.projected]) {
     for (const [k, v] of Object.entries(bucket)) {
-      if (typeof v !== 'number') continue; // bankSide は内訳の所在を示す文字列
       assert.equal(Number.isInteger(v), true, `${k} = ${v} is not an integer`);
     }
   }
@@ -448,8 +448,12 @@ test('32. formatLeaveAmount は半休を 0.5日 と書く（「4時間」と書�
   assert.equal(formatLeaveAmount(DAY_MINUTES / 2), '0.5日');
   assert.equal(formatLeaveAmount(-DAY_MINUTES / 2), '-0.5日');
   assert.equal(formatLeaveAmount(D(1.5)), '1.5日');
-  assert.equal(formatLeaveAmount(120), '2時間');   // 時間単位年休は時間のまま
   assert.equal(formatLeaveAmount(0), '0時間');
+  // 時間単位年休だけは日数へ書き替えない（法定5日に算入されないため）
+  assert.equal(formatLeaveAmount(240, 'hourly'), '4時間');
+  assert.equal(formatLeaveAmount(480, 'hourly'), '8時間');
+  assert.equal(formatLeaveAmount(120, 'hourly'), '2時間');
+  assert.equal(formatLeaveAmount(240, 'half-am'), '0.5日');
 });
 
 test('33. formatBalance は端数を日数へ繰り上げず「4.5日7時間」と分ける', () => {
@@ -461,10 +465,13 @@ test('33. formatBalance は端数を日数へ繰り上げず「4.5日7時間」�
   assert.equal(formatBalance(5520, 0), '11.5日');
   assert.equal(formatBalance(D(20), 0), '20日');
   assert.equal(formatBalance(0, 0), '0日');
-  assert.equal(formatBalance(-240, 0), '-4時間');    // マイナス残は従来表示
-  assert.equal(formatBalance(300, 999), '5時間');     // 範囲外の端数は無視して従来の分解に戻す
   assert.equal(formatBalance(2700, 0), '5日5時間');   // ちょうど半日でない端数は時間のまま
+  assert.equal(formatBalance(300, 999), '5時間');     // 範囲外の端数は無視して従来の分解に戻す
   assert.equal(formatBalance(DAY_MINUTES / 2, 0), '0.5日');
+  // マイナス残も履歴行と同じ「0.5日」流儀にそろえる（「-4時間」と書かない）
+  assert.equal(formatBalance(-240, 0), '-0.5日');
+  assert.equal(formatBalance(-420, 0), '-7時間');
+  assert.equal(formatBalance(-D(1.5), 0), '-1.5日');
 });
 
 test('34. 時間単位年休を取ると1日を8時間に崩し、端数が残る', () => {
@@ -474,7 +481,7 @@ test('34. 時間単位年休を取ると1日を8時間に崩し、端数が残�
   );
   assert.equal(r.asOf.totalMinutes, D(20) - 60);
   assert.equal(r.asOf.bankMinutes, 420);            // 8時間崩して1時間使い、7時間残っている
-  assert.equal(r.asOf.bankSide, 'current');
+  assert.equal(r.asOf.currentBankMinutes, 420);
   assert.equal(formatBalance(r.asOf.totalMinutes, r.asOf.bankMinutes), '19日7時間');
 });
 
@@ -485,7 +492,7 @@ test('35. 棚卸しの端数は半休を挟んでも日数側へ混ざらない'
       date: '2026-11-19',
       cur: D(4.5) + 420,
       carry: 0,
-      bank: 420,
+      curBank: 420,
       history: [entry('2026-11-20', 'half-am')],
     }),
     '2026-11-25'
@@ -495,19 +502,18 @@ test('35. 棚卸しの端数は半休を挟んでも日数側へ混ざらない'
 });
 
 test('36. 端数は当年分にあれば繰り越され、繰越分にあれば付与日に失効する', () => {
-  // 当年分側の端数 → 翌年度は繰越分の端数になる
   const carried = replay(
-    state({ date: '2026-11-19', cur: D(4.5) + 420, carry: 0, bank: 420 }),
-    '2026-04-02'.replace('2026', '2027')
+    state({ date: '2026-11-19', cur: D(4.5) + 420, carry: 0, curBank: 420 }),
+    '2027-04-02'
   );
-  assert.equal(carried.asOf.bankSide, 'carryover');
-  assert.equal(carried.asOf.bankMinutes, 420);
+  assert.equal(carried.asOf.carryoverBankMinutes, 420);
+  assert.equal(carried.asOf.currentBankMinutes, 0);
   assert.equal(carried.asOf.carryoverMinutes, D(4.5) + 420);
   assert.equal(formatBalance(carried.asOf.totalMinutes, carried.asOf.bankMinutes), '24.5日7時間');
 
   // 繰越分側の端数 → 付与日に繰越分ごと失効し、端数も消える
   const expired = replay(
-    state({ date: '2026-11-19', cur: D(10), carry: D(2) + 420, bank: 420 }),
+    state({ date: '2026-11-19', cur: D(10), carry: D(2) + 420, carryBank: 420 }),
     '2027-04-02'
   );
   assert.equal(expired.asOf.bankMinutes, 0);
@@ -521,7 +527,7 @@ test('37. 端数を持つ状態は 0.5日 刻みで読め、日数部と時間�
       date: '2026-11-19',
       cur: D(4.5) + 420,
       carry: 0,
-      bank: 420,
+      curBank: 420,
       history: [entry('2026-11-21', 'hourly', 2), entry('2026-11-22', 'half-pm')],
     }),
     '2026-11-25'
@@ -532,34 +538,135 @@ test('37. 端数を持つ状態は 0.5日 刻みで読め、日数部と時間�
   assert.equal(formatBalance(r.asOf.totalMinutes, r.asOf.bankMinutes), '4日5時間');
 });
 
-test('38. 端数を抱えた繰越分が尽きたら、端数は当年分側へ移る（付与日に失効させない）', () => {
+test('38. 端数は引いた枠だけで動く（繰越分に収まる消費で当年分の内訳を汚さない）', () => {
+  // 繰越1.5日から時間単位を 2h → 4h → 3h。3手目は繰越に無傷の半日しか無いので、
+  // 崩せるのは8時間ではなく4時間。480で崩すと実在しない4時間が端数に湧く。
+  const r = replay(
+    state({
+      date: '2026-05-01',
+      cur: D(20),
+      carry: D(1.5),
+      history: [
+        entry('2026-06-01', 'hourly', 2),
+        entry('2026-06-08', 'hourly', 4),
+        entry('2026-06-15', 'hourly', 3),
+      ],
+    }),
+    '2026-06-20'
+  );
+  assert.equal(r.asOf.currentMinutes, D(20));            // 当年分は1分も引かれていない
+  assert.equal(r.asOf.currentBankMinutes, 0);            // ので端数も付かない
+  assert.equal(r.asOf.carryoverMinutes, 180);
+  assert.equal(r.asOf.carryoverBankMinutes, 180);
+  assert.equal(formatBalance(r.asOf.totalMinutes, r.asOf.bankMinutes), '20日3時間');
+  // 内訳の和＝合計
+  assert.equal(
+    formatBalance(r.asOf.currentMinutes, r.asOf.currentBankMinutes) +
+      '+' + formatBalance(r.asOf.carryoverMinutes, r.asOf.carryoverBankMinutes),
+    '20日+3時間'
+  );
+});
+
+test('39. 繰越上限clampで切り捨てた分に端数が含まれていたら、端数も失効する', () => {
+  const r = replay(
+    state({
+      date: '2026-11-19',
+      cur: D(20) + 420,          // 棚卸しで「20日7時間」を入れた状態
+      carry: 0,
+      curBank: 420,
+      history: [entry('2027-05-01', 'half-am')],
+    }),
+    '2027-05-02'
+  );
+  assert.equal(r.asOf.bankMinutes, 0);     // 7時間は上限clampで切り捨てられている
+  assert.equal(formatBalance(r.asOf.totalMinutes, r.asOf.bankMinutes), '39.5日');
+});
+
+test('40. 端数を抱えた繰越分が尽きて当年分へ食い込む場合', () => {
   const r = replay(
     state({
       date: '2026-11-19',
       cur: D(5),
       carry: 60,
-      bank: 60,
+      carryBank: 60,
       history: [entry('2026-11-20', 'hourly', 3)],
     }),
     '2026-11-25'
   );
   assert.equal(r.asOf.carryoverMinutes, 0);
-  assert.equal(r.asOf.bankSide, 'current');   // 繰越分は尽きたので端数は当年分にある
-  assert.equal(r.asOf.bankMinutes, 360);
+  assert.equal(r.asOf.carryoverBankMinutes, 0);
+  assert.equal(r.asOf.currentBankMinutes, 360);   // 当年分の1日を崩して6時間残った
   assert.equal(formatBalance(r.asOf.totalMinutes, r.asOf.bankMinutes), '4日6時間');
 
-  // 付与日を越えても端数は失効せず、繰越分として残る
+  // 付与日を越えても当年分側の端数は失効せず、繰越分として残る
   const next = replay(
     state({
       date: '2026-11-19',
       cur: D(5),
       carry: 60,
-      bank: 60,
+      carryBank: 60,
       history: [entry('2026-11-20', 'hourly', 3)],
     }),
     '2027-04-02'
   );
-  assert.equal(next.asOf.bankMinutes, 360);
-  assert.equal(next.asOf.bankSide, 'carryover');
+  assert.equal(next.asOf.carryoverBankMinutes, 360);
   assert.equal(next.asOf.totalMinutes, D(20) + 2280);
+});
+
+test('41. 不変条件: 端数は枠を超えず、日数部は必ず0.5日刻みになる（総当たり）', () => {
+  // 端数が枠と整合しなくなると formatBalance が存在しない 0.5日 を作り、
+  // 「当年 + 繰越 = 残」が画面上で崩れる。消費の組み合わせを総当たりで検査する。
+  const KINDS = ['full', 'half-am', 'half-pm', 'hourly'];
+  const HOURS = [1, 2, 3, 4];
+  const CARRY = [0, 60, 240, 300, 480, 720, D(1.5), D(3)];
+  const CUR = [0, 240, D(5), D(20)];
+  let cases = 0;
+
+  const checkFrame = (frame, bank, where) => {
+    if (frame <= 0) {
+      assert.equal(bank, 0, `${where}: 枠が空なのに端数 ${bank}`);
+      return;
+    }
+    assert.ok(bank >= 0 && bank <= frame, `${where}: 端数 ${bank} が枠 ${frame} を超えている`);
+    assert.ok(bank < DAY_MINUTES, `${where}: 端数 ${bank} が1日以上`);
+    assert.equal(bank % 240, frame % 240, `${where}: 日数部が0.5日刻みでない (${frame}/${bank})`);
+  };
+
+  for (const carry of CARRY) {
+    for (const cur of CUR) {
+      for (const k1 of KINDS) {
+        for (const h1 of k1 === 'hourly' ? HOURS : [0]) {
+          for (const k2 of KINDS) {
+            for (const h2 of k2 === 'hourly' ? HOURS : [0]) {
+              const st = state({
+                date: '2026-05-01',
+                cur,
+                carry,
+                history: [entry('2026-06-01', k1, h1), entry('2026-06-02', k2, h2)],
+              });
+              for (const today of ['2026-06-10', '2027-04-02']) {
+                const a = replay(st, today).asOf;
+                cases += 1;
+                checkFrame(a.currentMinutes, a.currentBankMinutes, `当年 ${today}`);
+                checkFrame(a.carryoverMinutes, a.carryoverBankMinutes, `繰越 ${today}`);
+                // 両枠が同時に端数を持つことはない（消化は繰越分が先）
+                assert.ok(
+                  a.currentBankMinutes === 0 || a.carryoverBankMinutes === 0,
+                  `両枠に端数 (${a.currentBankMinutes}/${a.carryoverBankMinutes})`
+                );
+                // 内訳の表示の和が合計の表示と一致する
+                if (a.currentMinutes >= 0 && a.carryoverMinutes >= 0) {
+                  const sum =
+                    (a.currentMinutes - a.currentBankMinutes) +
+                    (a.carryoverMinutes - a.carryoverBankMinutes);
+                  assert.equal(sum % 240, 0, '合計の日数部が0.5日刻みでない');
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.ok(cases > 2000, `総当たり件数が少なすぎる: ${cases}`);
 });
