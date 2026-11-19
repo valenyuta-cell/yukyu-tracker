@@ -7,7 +7,7 @@
 // この事故を避けるため、更新が必ず届く側に倒す。オフライン起動はキャッシュへの
 // フォールバックで担保する。
 
-const CACHE_NAME = 'yukyu-1.2.0'; // core.js の VERSION と一致させること（テスト23が検査する）
+const CACHE_NAME = 'yukyu-1.3.0'; // core.js の VERSION と一致させること（テスト23が検査する）
 const NETWORK_TIMEOUT_MS = 2500;
 
 const SHELL = ['./', './index.html', './core.js', './manifest.webmanifest'];

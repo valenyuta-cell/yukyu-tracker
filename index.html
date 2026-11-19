@@ -81,7 +81,8 @@ button.link{background:none; border:0; color:var(--accent); padding:6px 8px; tex
 .hist .v{font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap}
 .hist .v small{display:block; font-size:12px; color:var(--accent); font-weight:600}
 #recPreview small{display:block; font-weight:400; font-size:13px; margin-top:3px; line-height:1.45}
-.badge{font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); margin-left:6px}
+.badge{font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line);
+  color:var(--muted); margin-left:6px; display:inline-block; white-space:nowrap}
 .sheet{position:fixed; inset:0; background:var(--bg); z-index:50; overflow-y:auto; -webkit-overflow-scrolling:touch}
 .sheet-head{position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line);
   padding:calc(env(safe-area-inset-top) + 8px) 16px 8px; display:flex; justify-content:space-between; align-items:center}
@@ -180,6 +181,11 @@ footer{padding:0 16px calc(env(safe-area-inset-bottom) + 24px); color:var(--mute
       <label>基準日</label><input type="date" id="stDate">
       <label>当年分（日）</label><input type="number" id="stCurrent" step="0.5" min="0">
       <label>繰越分（日）</label><input type="number" id="stCarry" step="0.5" min="0">
+      <label>端数（時間）</label><input type="number" id="stBank" step="1" min="0" max="7">
+      <div class="muted" style="margin-top:-4px;font-size:13px">
+        会社の表示が「4.5日7時間」なら、日数欄の合計に 4.5、ここに 7。時間単位年休のために
+        1日を8時間へ崩した残りです。端数が無ければ 0。
+      </div>
       <label>今年度すでに取った時間単位年休（時間）</label><input type="number" id="stHourly" step="1" min="0">
       <label>今年度すでに取った日数（法定5日の判定用）</label><input type="number" id="stStatutory" step="0.5" min="0">
       <div class="muted" style="margin-top:-4px;font-size:13px">
@@ -215,7 +221,7 @@ footer{padding:0 16px calc(env(safe-area-inset-bottom) + 24px); color:var(--mute
 
     <h2>計算の前提（就業規則）</h2>
     <div class="card muted">
-      基準日 4月1日／年間付与 20日／有休1日＝8時間（半休4時間）／時間単位年休は年5日＝40時間・1時間単位／
+      基準日 4月1日／年間付与 20日／有休1日＝8時間・半休＝0.5日／時間単位年休は年5日＝40時間・1時間単位／
       繰越上限 20日／消化は繰越分から／繰越分は4月1日に失効＝使えるのは3月31日まで。
       これらは <code>core.js</code> の定数です。
     </div>
@@ -227,12 +233,18 @@ footer{padding:0 16px calc(env(safe-area-inset-bottom) + 24px); color:var(--mute
 <script type="module">
 import {
   VERSION, DAY_MINUTES, HOURLY_CAP_MINUTES, ANNUAL_GRANT_MINUTES,
-  replay, normalizeState, emptyState, makeEntry, formatMinutes, formatDays,
+  replay, normalizeState, emptyState, makeEntry,
+  formatBalance, formatLeaveAmount,
   addDays, daysBetween, compareDate, KIND_LABEL, KIND_MINUTES,
 } from './core.js';
 
 const KEY = 'yukyu.v1';
 const $ = (id) => document.getElementById(id);
+
+/* 端数（時間単位年休のために崩した1日の残り）は、当年分か繰越分のどちらか一方にしか無い。
+   内訳の行と合計の行で同じ分け方になるように、どちら側かを見てから渡す。 */
+const curBank = (b) => (b.bankSide === 'current' ? b.bankMinutes : 0);
+const carryBank = (b) => (b.bankSide === 'carryover' ? b.bankMinutes : 0);
 
 /* 「今日」の生成は UI 層のここだけ。toISOString() は UTC の日付を返し、JST の 0〜9時に前日を
    返すため使わない。sv-SE ロケールは YYYY-MM-DD 形式を返す。 */
@@ -281,7 +293,7 @@ function render() {
   view = replay(state, TODAY);
   const a = view.asOf;
 
-  $('total').innerHTML = '<small>残</small>' + formatMinutes(a.totalMinutes);
+  $('total').innerHTML = '<small>残</small>' + formatBalance(a.totalMinutes, a.bankMinutes);
 
   // 未来日付の予定を入れても大きな数字は動かないので、「予定を引いた後」を別行で示す。
   // 予定が無いときは行ごと隠す（常時出すと0件でも読ませる情報が増えるだけ）。
@@ -290,8 +302,8 @@ function render() {
   if (view.plannedCount > 0) {
     const beyond = state.history.some((e) => compareDate(e.date, view.expiryDate) >= 0);
     rowP.querySelector('.v').innerHTML =
-      formatMinutes(view.projected.totalMinutes) +
-      '<small>予定' + view.plannedCount + '件 −' + formatMinutes(view.plannedMinutes) +
+      formatBalance(view.projected.totalMinutes, view.projected.bankMinutes) +
+      '<small>予定' + view.plannedCount + '件 −' + formatLeaveAmount(view.plannedMinutes) +
       (beyond ? '<br>※4月以降の予定は含みません' : '') + '</small>';
   }
 
@@ -300,9 +312,10 @@ function render() {
   rowE.classList.remove('warn', 'danger');
   if (view.expiringMinutes > 0) {
     rowE.hidden = false;
-    let txt = formatMinutes(view.expiringMinutes) + ' — ' + jp(view.lastUsableDate) + 'まで（あと' + daysLeft + '日）';
+    let txt = formatBalance(view.expiringMinutes, carryBank(a)) + ' — ' + jp(view.lastUsableDate) + 'まで（あと' + daysLeft + '日）';
     if (view.projectedExpiringMinutes !== view.expiringMinutes) {
-      txt += '<small>登録済みの予定を引くと ' + formatMinutes(view.projectedExpiringMinutes) + '</small>';
+      txt += '<small>登録済みの予定を引くと ' +
+        formatBalance(view.projectedExpiringMinutes, carryBank(view.projected)) + '</small>';
     }
     rowE.querySelector('.v').innerHTML = txt;
     if (daysLeft <= 30) rowE.classList.add('danger');
@@ -311,7 +324,8 @@ function render() {
     rowE.hidden = true;
   }
 
-  $('rowCurrent').querySelector('.v').textContent = formatMinutes(a.currentMinutes);
+  $('rowCurrent').querySelector('.v').textContent =
+    formatBalance(a.currentMinutes, curBank(a));
 
   const s = view.statutory;
   $('rowStatutory').querySelector('.v').innerHTML =
@@ -347,7 +361,7 @@ function renderBanner() {
   const exp = recent.reduce((n, e) => n + e.expiredMinutes, 0);
   const y = recent[recent.length - 1].date.slice(0, 4);
   $('bannerText').textContent =
-    y + '年度に更新されました　付与 +' + formatMinutes(grant) + ' / 失効 −' + formatMinutes(exp);
+    y + '年度に更新されました　付与 +' + formatLeaveAmount(grant) + ' / 失効 −' + formatLeaveAmount(exp);
   $('banner').hidden = false;
 }
 
@@ -406,8 +420,8 @@ function rollRow(ev) {
   const y = ev.date.slice(0, 4);
   li.innerHTML =
     '<span class="date">' + jp(ev.date) + '</span>' +
-    '<span class="body">' + y + '年度　付与 +' + formatMinutes(ev.grantMinutes) +
-    '・失効 −' + formatMinutes(ev.expiredMinutes) + '</span>';
+    '<span class="body">' + y + '年度　付与 +' + formatLeaveAmount(ev.grantMinutes) +
+    '・失効 −' + formatLeaveAmount(ev.expiredMinutes) + '</span>';
   return li; // 自動生成なので削除ボタンは付けない
 }
 
@@ -417,7 +431,9 @@ function entryRow(e) {
   const isFuture = compareDate(e.date, TODAY) > 0;
   const after = view.plannedTimeline.find((p) => p.id === e.id);
   if (isPre) li.className = 'pre';
-  const label = KIND_LABEL[e.kind] + (e.kind === 'hourly' ? ' ' + e.minutes / 60 + '時間' : '');
+  // 量は右側の「−0.5日」「−2時間」が持つので、ここは種別だけにする
+  // （375px幅で「午前半休 0.5」「日」と折り返していた）。
+  const label = KIND_LABEL[e.kind];
   li.innerHTML =
     '<span class="date">' + jp(e.date) + '</span>' +
     '<span class="body">' + esc(label) +
@@ -425,9 +441,9 @@ function entryRow(e) {
     (isPre ? '<span class="badge">計算対象外</span>' : '') +
     (e.note ? '<br><span class="muted">' + esc(e.note) + '</span>' : '') +
     '</span>' +
-    '<span class="v" style="color:var(--muted)">−' + formatMinutes(e.minutes) +
+    '<span class="v" style="color:var(--muted)">−' + formatLeaveAmount(e.minutes) +
     // 予定行には「この休みを取った後の残高」を併記して、先の見通しが順に読めるようにする
-    (after ? '<small>→ 残 ' + formatMinutes(after.totalMinutes) + '</small>' : '') +
+    (after ? '<small>→ 残 ' + formatBalance(after.totalMinutes, after.bankMinutes) + '</small>' : '') +
     '</span>';
   const del = document.createElement('button');
   del.className = 'del';
@@ -449,19 +465,22 @@ function renderRecPreview() {
 
   const probe = makeEntry({ id: '__preview', date, kind: pickedKind, hours: pickedHours });
   const after = replay({ ...state, history: [...state.history, probe] }, TODAY);
-  const label = KIND_LABEL[pickedKind] + (pickedKind === 'hourly' ? ' ' + pickedHours + '時間' : '');
+  const label = KIND_LABEL[pickedKind] +
+    (pickedKind === 'full' ? '' : ' ' + formatLeaveAmount(probe.minutes));
 
   if (compareDate(date, state.baseline.date) < 0) {
     el.innerHTML = '⚠️ 棚卸しより前の日付です<small class="muted">残高計算には含まれません</small>';
   } else if (compareDate(date, TODAY) > 0) {
     el.innerHTML =
       '予定に追加　' + esc(label) +
-      '<small class="muted">今の残 ' + formatMinutes(view.asOf.totalMinutes) + ' は変わりません。' +
-      '予定を引くと ' + formatMinutes(after.projected.totalMinutes) + '</small>';
+      '<small class="muted">今の残 ' + formatBalance(view.asOf.totalMinutes, view.asOf.bankMinutes) +
+      ' は変わりません。予定を引くと ' +
+      formatBalance(after.projected.totalMinutes, after.projected.bankMinutes) + '</small>';
   } else {
     el.innerHTML =
-      '残 ' + formatMinutes(view.asOf.totalMinutes) + ' → ' +
-      '<span style="color:var(--accent)">' + formatMinutes(after.asOf.totalMinutes) + '</span>';
+      '残 ' + formatBalance(view.asOf.totalMinutes, view.asOf.bankMinutes) + ' → ' +
+      '<span style="color:var(--accent)">' +
+      formatBalance(after.asOf.totalMinutes, after.asOf.bankMinutes) + '</span>';
   }
 }
 
@@ -547,10 +566,10 @@ $('save').onclick = () => {
   render();
   $('memo').value = '';
   const msg = compareDate(entry.date, TODAY) > 0
-    ? KIND_LABEL[entry.kind] + ' ' + formatMinutes(entry.minutes) + 'を予定に追加　予定を引くと 残 ' +
-      formatMinutes(view.projected.totalMinutes)
-    : KIND_LABEL[entry.kind] + ' ' + formatMinutes(entry.minutes) + 'を記録　残 ' +
-      formatMinutes(view.asOf.totalMinutes);
+    ? KIND_LABEL[entry.kind] + ' ' + formatLeaveAmount(entry.minutes) + 'を予定に追加　予定を引くと 残 ' +
+      formatBalance(view.projected.totalMinutes, view.projected.bankMinutes)
+    : KIND_LABEL[entry.kind] + ' ' + formatLeaveAmount(entry.minutes) + 'を記録　残 ' +
+      formatBalance(view.asOf.totalMinutes, view.asOf.bankMinutes);
   toast(msg, '取り消す', () => removeEntry(entry.id, true));
 };
 
@@ -585,8 +604,9 @@ $('closeSettings').onclick = () => { $('sheet').hidden = true; render(); };
 
 function fillSettings() {
   $('stDate').value = TODAY;
-  $('stCurrent').value = view.asOf.currentMinutes / DAY_MINUTES;
-  $('stCarry').value = view.asOf.carryoverMinutes / DAY_MINUTES;
+  $('stCurrent').value = (view.asOf.currentMinutes - curBank(view.asOf)) / DAY_MINUTES;
+  $('stCarry').value = (view.asOf.carryoverMinutes - carryBank(view.asOf)) / DAY_MINUTES;
+  $('stBank').value = view.asOf.bankMinutes / 60;
   $('stHourly').value = view.asOf.hourlyUsedMinutes / 60;
   $('stStatutory').value = view.statutory.takenDays;
   $('dump').value = localStorage.getItem(KEY) || '';
@@ -596,12 +616,19 @@ function fillSettings() {
 }
 
 function stocktakeValues() {
+  const bankHours = Math.max(0, Math.min(7, Math.round(Number($('stBank').value || 0))));
+  const bankMinutes = bankHours * 60;
+  const carryDays = Number($('stCarry').value || 0);
+  // 消化は繰越分から先に進むので、崩した1日の残りも繰越分がある限り繰越分の側にある。
+  const inCarry = carryDays > 0;
   return {
     date: $('stDate').value || TODAY,
-    currentMinutes: Math.round(Number($('stCurrent').value || 0) * DAY_MINUTES),
-    carryoverMinutes: Math.round(Number($('stCarry').value || 0) * DAY_MINUTES),
+    currentMinutes: Math.round(Number($('stCurrent').value || 0) * DAY_MINUTES) +
+      (inCarry ? 0 : bankMinutes),
+    carryoverMinutes: Math.round(carryDays * DAY_MINUTES) + (inCarry ? bankMinutes : 0),
     hourlyUsedMinutes: Math.round(Number($('stHourly').value || 0) * 60),
     statutoryTakenDays: Math.round(Number($('stStatutory').value || 0) * 2) / 2,
+    bankMinutes,
   };
 }
 
@@ -609,11 +636,13 @@ function previewStocktake() {
   const b = stocktakeValues();
   const after = replay({ ...state, baseline: b, history: state.history }, TODAY);
   $('stPreview').textContent =
-    '現在 残' + formatMinutes(view.asOf.totalMinutes) +
-    ' → 実行後 残' + formatMinutes(after.asOf.totalMinutes);
+    '現在 残' + formatBalance(view.asOf.totalMinutes, view.asOf.bankMinutes) +
+    ' → 実行後 残' + formatBalance(after.asOf.totalMinutes, after.asOf.bankMinutes);
 }
 
-for (const id of ['stDate', 'stCurrent', 'stCarry', 'stHourly']) $(id).oninput = previewStocktake;
+for (const id of ['stDate', 'stCurrent', 'stCarry', 'stBank', 'stHourly']) {
+  $(id).oninput = previewStocktake;
+}
 
 $('stApply').onclick = () => {
   const b = stocktakeValues();
