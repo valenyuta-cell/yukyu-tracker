@@ -6,7 +6,7 @@
 // JST の 0〜9時に「前日」が算出される。4月1日の朝に「まだ失効しません」と嘘をつく事故を
 // 構造的に防ぐため、Date は UI 層（index.html の todayInTokyo）だけで使う。
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 export const SCHEMA_VERSION = 1;
 
 // ── 勤務先の就業規則に基づく定数（条項との対応は 根拠メモ.local.md。gitには含めない） ──
@@ -504,6 +504,104 @@ function withTotals(bal) {
     totalMinutes: bal.currentMinutes + bal.carryoverMinutes,
     bankMinutes: bal.currentBankMinutes + bal.carryoverBankMinutes,
   };
+}
+
+// ──────────── 会社の表示（予定を引いた後の残数）から棚卸しの値を逆算する ────────────
+
+/**
+ * 枠 M に対して端数の不変条件（b ≡ M mod 240 ／ 0 ≤ b ≤ M ／ b < 480）を満たす候補。
+ * 240で割った余りと、それに半日を足したものの2つしかない。
+ */
+export function bankCandidates(frameMinutes) {
+  const M = Math.max(0, Math.round(Number(frameMinutes) || 0));
+  const out = [];
+  for (const b of [M % HALF_DAY_MINUTES, (M % HALF_DAY_MINUTES) + HALF_DAY_MINUTES]) {
+    if (b <= M && b < DAY_MINUTES) out.push(b);
+  }
+  return out.length ? out : [0];
+}
+
+/**
+ * 会社の勤怠システムが出す残数は「提出済みの休暇申請を引いた後」の値である。
+ * 一方このアプリの棚卸しは「今日時点の残高（予定を引く前）」を入れる欄なので、
+ * 会社の数字をそのまま入れると、あとで同じ予定を記録したときに二重に引かれる。
+ * ここでは登録済みの予定を足し戻して、棚卸しに入れるべき値へ直す。
+ *
+ * 逆算は total については単純な足し算で済む（消費は枠の引き算なので
+ * 予定差引後の合計 = 棚卸し時点の合計 − 予定の合計 が常に成り立つ）。
+ * 問題になるのは端数（「7時間」の桁）だけで、こちらは applyConsume の逆関数を
+ * 書き起こすのではなく、**候補を replay に通して一致するものを選ぶ**。
+ * 端数の候補は枠ごとに高々2つ（bankCandidates）なので全列挙でも4通りしかなく、
+ * 前向きの計算（既にテストで固めてある側）を仕様としてそのまま使える。
+ */
+export function baselineFromPlannedTarget({
+  date,
+  target,
+  history = [],
+  hourlyUsedMinutes = 0,
+  statutoryTakenDays = 0,
+}) {
+  if (!isValidDate(date)) throw new Error(`invalid date: ${date}`);
+  const horizon = nextGrantDate(date);
+  // 足し戻す対象は次の付与日より前の予定だけ。付与日以降の休みは翌年度の付与から
+  // 引かれるので、会社も今年度の残数からは引いていない。
+  const planned = (Array.isArray(history) ? history : []).filter(
+    (e) => e && compareDate(e.date, date) > 0 && compareDate(e.date, horizon) < 0
+  );
+  const addBackMinutes = planned.reduce((s, e) => s + toInt(e.minutes, 0), 0);
+  const beyondHorizonCount = (Array.isArray(history) ? history : []).filter(
+    (e) => e && compareDate(e.date, horizon) >= 0
+  ).length;
+
+  const t = {
+    currentMinutes: toInt(target?.currentMinutes, 0),
+    currentBankMinutes: toInt(target?.currentBankMinutes, 0),
+    carryoverMinutes: toInt(target?.carryoverMinutes, 0),
+    carryoverBankMinutes: toInt(target?.carryoverBankMinutes, 0),
+  };
+
+  // 消化は繰越分が先なので、予定を引いた後に繰越分が残っているなら、その予定は
+  // すべて繰越分から出ており当年分には届いていない。残っていない場合は当年分から
+  // 出たものとして戻す。繰越分を使い切るほどの予定があるなら、その繰越分は失効ではなく
+  // 消化されるので、どちらに寄せても失効予告（projectedExpiringMinutes）は変わらない。
+  const toCarryover = t.carryoverMinutes > 0;
+  const currentMinutes = t.currentMinutes + (toCarryover ? 0 : addBackMinutes);
+  const carryoverMinutes = t.carryoverMinutes + (toCarryover ? addBackMinutes : 0);
+
+  const common = {
+    date,
+    hourlyUsedMinutes: toInt(hourlyUsedMinutes, 0),
+    statutoryTakenDays: toHalf(statutoryTakenDays, 0),
+  };
+
+  let fallback = null;
+  for (const cb of bankCandidates(currentMinutes)) {
+    for (const yb of bankCandidates(carryoverMinutes)) {
+      const baseline = {
+        ...common,
+        currentMinutes,
+        currentBankMinutes: cb,
+        carryoverMinutes,
+        carryoverBankMinutes: yb,
+      };
+      if (fallback === null) fallback = baseline;
+      const p = replay(
+        { schemaVersion: SCHEMA_VERSION, baseline, prevBaseline: null, history, lastSeenDate: date },
+        date
+      ).projected;
+      if (
+        p.currentMinutes === t.currentMinutes &&
+        p.carryoverMinutes === t.carryoverMinutes &&
+        p.currentBankMinutes === t.currentBankMinutes &&
+        p.carryoverBankMinutes === t.carryoverBankMinutes
+      ) {
+        return { baseline, addBackMinutes, plannedCount: planned.length, beyondHorizonCount, exact: true };
+      }
+    }
+  }
+  // 一致する端数の組み合わせが無い（残高がマイナスへ回る等）。量は正しいので黙って
+  // 捨てずに正規形で返し、exact:false を呼び出し側へ渡して画面に出させる。
+  return { baseline: fallback, addBackMinutes, plannedCount: planned.length, beyondHorizonCount, exact: false };
 }
 
 /** 失効日（4/1）の前日 = 実際に使える最終日（3/31）。「4/1に失効」を「4/1まで使える」と誤読させないため。 */

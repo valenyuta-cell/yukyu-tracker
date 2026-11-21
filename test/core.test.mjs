@@ -17,6 +17,8 @@ import {
   formatBalance,
   formatLeaveAmount,
   makeEntry,
+  bankCandidates,
+  baselineFromPlannedTarget,
   daysBetween,
   lastUsableDateFor,
 } from '../core.js';
@@ -669,4 +671,149 @@ test('41. 不変条件: 端数は枠を超えず、日数部は必ず0.5日刻�
     }
   }
   assert.ok(cases > 2000, `総当たり件数が少なすぎる: ${cases}`);
+});
+
+// ───── 会社の表示（予定を引いた後）から棚卸しの値を逆算する ─────
+
+const target = (v) => ({
+  currentMinutes: v.currentMinutes,
+  currentBankMinutes: v.currentBankMinutes,
+  carryoverMinutes: v.carryoverMinutes,
+  carryoverBankMinutes: v.carryoverBankMinutes,
+});
+
+/** 逆算した baseline で replay し直した結果を返す。 */
+const replayFrom = (r, history, date) =>
+  replay({ schemaVersion: 1, baseline: r.baseline, prevBaseline: null, history, lastSeenDate: date }, date);
+
+test('42. 端数の候補は不変条件を満たすものだけ（枠ごとに高々2つ）', () => {
+  assert.deepEqual(bankCandidates(D(5) + 180), [180, 420]);
+  assert.deepEqual(bankCandidates(0), [0]);
+  assert.deepEqual(bankCandidates(100), [100]);           // 枠より大きい候補は出さない
+  for (const M of [0, 60, 240, 300, 480, 2580, 9600]) {
+    for (const b of bankCandidates(M)) {
+      assert.ok(b >= 0 && b <= M && b < DAY_MINUTES, `${M}/${b}`);
+      assert.equal(b % 240, M % 240);
+    }
+  }
+});
+
+test('43. 予定が0件なら、予定差引後モードでも入力値がそのまま baseline になる', () => {
+  const r = baselineFromPlannedTarget({
+    date: '2026-11-21',
+    target: { currentMinutes: 2580, currentBankMinutes: 420, carryoverMinutes: 0, carryoverBankMinutes: 0 },
+    history: [],
+  });
+  assert.equal(r.addBackMinutes, 0);
+  assert.equal(r.plannedCount, 0);
+  assert.equal(r.exact, true);
+  assert.equal(r.baseline.currentMinutes, 2580);
+  assert.equal(r.baseline.currentBankMinutes, 420);
+});
+
+test('44. 全日・半休の予定を足し戻すと、予定差引後が会社の表示を再現する', () => {
+  const history = [entry('2026-12-29', 'full'), entry('2027-02-10', 'half-pm')];
+  const r = baselineFromPlannedTarget({
+    date: '2026-11-21',
+    target: { currentMinutes: 2580, currentBankMinutes: 420, carryoverMinutes: 0, carryoverBankMinutes: 0 },
+    history,
+  });
+  assert.equal(r.addBackMinutes, D(1) + 240);
+  assert.equal(r.plannedCount, 2);
+  assert.equal(r.exact, true);
+  assert.equal(r.baseline.currentMinutes, 2580 + D(1) + 240);
+  const v = replayFrom(r, history, '2026-11-21');
+  assert.equal(formatBalance(v.asOf.totalMinutes, v.asOf.bankMinutes), '6日7時間');
+  assert.equal(formatBalance(v.projected.totalMinutes, v.projected.bankMinutes), '4.5日7時間');
+});
+
+test('45. 時間単位の予定でも「時間」の桁が再現される（端数は前向きの計算で選ぶ）', () => {
+  const history = [entry('2026-12-01', 'hourly', 2)];
+  const r = baselineFromPlannedTarget({
+    date: '2026-11-21',
+    target: { currentMinutes: 2580, currentBankMinutes: 420, carryoverMinutes: 0, carryoverBankMinutes: 0 },
+    history,
+  });
+  assert.equal(r.exact, true);
+  assert.equal(r.baseline.currentMinutes, 2700);
+  assert.equal(r.baseline.currentBankMinutes, 60);       // 7時間+2時間は繰り上がらない
+  const v = replayFrom(r, history, '2026-11-21');
+  assert.equal(formatBalance(v.asOf.totalMinutes, v.asOf.bankMinutes), '5.5日1時間');
+  assert.equal(formatBalance(v.projected.totalMinutes, v.projected.bankMinutes), '4.5日7時間');
+});
+
+test('46. 繰越分が残っているなら、予定は繰越分から出ているので繰越分へ足し戻す', () => {
+  const history = [entry('2026-12-29', 'full')];
+  const r = baselineFromPlannedTarget({
+    date: '2026-11-21',
+    target: { currentMinutes: D(20), currentBankMinutes: 0, carryoverMinutes: D(2), carryoverBankMinutes: 0 },
+    history,
+  });
+  assert.equal(r.exact, true);
+  assert.equal(r.baseline.carryoverMinutes, D(3));
+  assert.equal(r.baseline.currentMinutes, D(20));        // 当年分には届いていない
+  const v = replayFrom(r, history, '2026-11-21');
+  assert.equal(v.projected.carryoverMinutes, D(2));
+  assert.equal(v.projected.currentMinutes, D(20));
+});
+
+test('47. 4月以降の予定は足し戻さない（翌年度の付与から引かれるため）', () => {
+  const history = [entry('2027-04-10', 'full')];
+  const r = baselineFromPlannedTarget({
+    date: '2026-11-21',
+    target: { currentMinutes: 2580, currentBankMinutes: 420, carryoverMinutes: 0, carryoverBankMinutes: 0 },
+    history,
+  });
+  assert.equal(r.addBackMinutes, 0);
+  assert.equal(r.beyondHorizonCount, 1);
+  assert.equal(r.baseline.currentMinutes, 2580);
+});
+
+test('48. 往復: 予定差引後の表示から逆算すると、同じ表示へ戻る（総当たり）', () => {
+  const DATE = '2026-11-21';
+  const PLANS = [
+    [],
+    [entry('2026-12-01', 'full')],
+    [entry('2026-12-01', 'half-am')],
+    [entry('2026-12-01', 'hourly', 1)],
+    [entry('2026-12-01', 'hourly', 3)],
+    [entry('2026-12-01', 'hourly', 4)],
+    [entry('2026-12-01', 'full'), entry('2026-12-02', 'hourly', 2)],
+    [entry('2026-12-01', 'hourly', 2), entry('2026-12-02', 'hourly', 3), entry('2026-12-03', 'half-pm')],
+    [entry('2026-12-01', 'full'), entry('2026-12-02', 'full'), entry('2026-12-03', 'full')],
+  ];
+  const SEEDS = [];
+  for (const carry of [0, 240, D(1), D(2) + 180]) {
+    for (const cur of [0, 240, D(1) + 420, D(5) + 180, D(20)]) {
+      for (const curBank of bankCandidates(cur)) {
+        for (const carryBank of bankCandidates(carry)) {
+          SEEDS.push({ cur, carry, curBank, carryBank });
+        }
+      }
+    }
+  }
+
+  let checked = 0;
+  for (const seed of SEEDS) {
+    for (const plans of PLANS) {
+      const st = state({ date: DATE, ...seed, history: plans });
+      const before = replay(st, DATE);
+      // 会社の画面に出ているはずの数字（＝予定差引後）だけを手がかりに逆算する
+      const r = baselineFromPlannedTarget({
+        date: DATE,
+        target: target(before.projected),
+        history: plans,
+      });
+      assert.equal(r.exact, true, `exact: ${JSON.stringify(seed)} / ${plans.length}件`);
+      const after = replayFrom(r, plans, DATE);
+      const lhs = target(after.projected);
+      const rhs = target(before.projected);
+      assert.deepEqual(lhs, rhs, `往復: ${JSON.stringify(seed)} / ${plans.length}件`);
+      // 今日の残（合計）も戻る。端数の内訳はどちらの枠から予定が出たか決まらない
+      // ことがあるため、合計と表示の一致で判定する。
+      assert.equal(after.asOf.totalMinutes, before.asOf.totalMinutes, `合計: ${JSON.stringify(seed)}`);
+      checked++;
+    }
+  }
+  assert.ok(checked >= 300, `検査件数 ${checked}`);
 });

@@ -182,6 +182,12 @@ footer{padding:0 16px calc(env(safe-area-inset-bottom) + 24px); color:var(--mute
         <strong>代休・特別休暇・リフレッシュ休暇は含めないこと</strong>（別制度で失効日が異なります）。
       </p>
       <label>基準日</label><input type="date" id="stDate">
+      <label>入れる数字はどちら</label>
+      <div class="chips grid2" id="stModeChips">
+        <button class="chip" data-mode="now" aria-pressed="true">今日の残</button>
+        <button class="chip" data-mode="planned">予定を引いた後</button>
+      </div>
+      <div class="muted" id="stModeHint" style="margin-top:-4px;font-size:13px"></div>
       <label>当年分</label>
       <div class="pair">
         <input type="number" id="stCurrent" step="0.5" min="0" inputmode="decimal"><span>日</span>
@@ -245,7 +251,7 @@ footer{padding:0 16px calc(env(safe-area-inset-bottom) + 24px); color:var(--mute
 import {
   VERSION, DAY_MINUTES, HOURLY_CAP_MINUTES, ANNUAL_GRANT_MINUTES,
   replay, normalizeState, emptyState, makeEntry,
-  formatBalance, formatLeaveAmount,
+  formatBalance, formatLeaveAmount, baselineFromPlannedTarget,
   addDays, daysBetween, compareDate, KIND_LABEL, KIND_MINUTES,
 } from './core.js';
 
@@ -313,6 +319,7 @@ function render() {
     rowP.querySelector('.v').innerHTML =
       formatBalance(view.projected.totalMinutes, view.projected.bankMinutes) +
       '<small>予定' + view.plannedCount + '件 −' + formatLeaveAmount(view.plannedMinutes) +
+      '　会社の表示に相当' +
       (beyond ? '<br>※4月以降の予定は含みません' : '') + '</small>';
   }
 
@@ -613,13 +620,34 @@ $('openSettings').onclick = () => {
 };
 $('closeSettings').onclick = () => { $('sheet').hidden = true; render(); };
 
+// 会社の勤怠が出すのは「提出済みの申請を引いた後」の残数で、この欄が欲しいのは
+// 「今日時点の残高（予定を引く前）」。どちらを入れたのかをアプリが知らないと、
+// 予定ぶんが二重に引かれる（または足りない）。モードで明示させる。
+let stMode = 'now';
+
+const ST_MODE_HINT = {
+  now: '会社の画面が、これから休む予定を引く前の残数を出している場合。そのまま入れます。',
+  planned:
+    '会社の画面が、提出済みの休暇申請を引いた後の残数を出している場合。' +
+    'アプリに登録済みの予定を足し戻して、今日の残に直します。' +
+    '先に「休みを記録」で予定（未来の日付）を入れておいてください。',
+};
+
+function stPrefill() {
+  // どちらのモードでも、何も編集せずに実行したら残高が動かないように前埋めする。
+  const v = stMode === 'planned' ? view.projected : view.asOf;
+  $('stCurrent').value = (v.currentMinutes - v.currentBankMinutes) / DAY_MINUTES;
+  $('stCurrentH').value = v.currentBankMinutes / 60;
+  $('stCarry').value = (v.carryoverMinutes - v.carryoverBankMinutes) / DAY_MINUTES;
+  $('stCarryH').value = v.carryoverBankMinutes / 60;
+}
+
 function fillSettings() {
   $('stDate').value = TODAY;
-  const a0 = view.asOf;
-  $('stCurrent').value = (a0.currentMinutes - a0.currentBankMinutes) / DAY_MINUTES;
-  $('stCurrentH').value = a0.currentBankMinutes / 60;
-  $('stCarry').value = (a0.carryoverMinutes - a0.carryoverBankMinutes) / DAY_MINUTES;
-  $('stCarryH').value = a0.carryoverBankMinutes / 60;
+  stMode = 'now';
+  setPressed($('stModeChips'), (b) => b.dataset.mode === 'now');
+  $('stModeHint').textContent = ST_MODE_HINT.now;
+  stPrefill();
   $('stHourly').value = view.asOf.hourlyUsedMinutes / 60;
   $('stStatutory').value = view.statutory.takenDays;
   $('dump').value = localStorage.getItem(KEY) || '';
@@ -632,37 +660,95 @@ function fillSettings() {
 // 変わるため、枠ごとに入力させる（繰越分に「0日5時間」だけ残る状態が普通に起きる）。
 const stBankMinutes = (id) => Math.max(0, Math.min(7, Math.round(Number($(id).value || 0)))) * 60;
 
-function stocktakeValues() {
+// 入力欄に書かれている数字そのまま（モードによって意味が変わる）。
+function stocktakeTarget() {
   const curBankMinutes = stBankMinutes('stCurrentH');
   const carryBankMinutes = stBankMinutes('stCarryH');
   return {
-    date: $('stDate').value || TODAY,
     currentMinutes:
       Math.round(Number($('stCurrent').value || 0) * DAY_MINUTES) + curBankMinutes,
     currentBankMinutes: curBankMinutes,
     carryoverMinutes:
       Math.round(Number($('stCarry').value || 0) * DAY_MINUTES) + carryBankMinutes,
     carryoverBankMinutes: carryBankMinutes,
-    hourlyUsedMinutes: Math.round(Number($('stHourly').value || 0) * 60),
-    statutoryTakenDays: Math.round(Number($('stStatutory').value || 0) * 2) / 2,
   };
 }
 
+/** 入力欄の数字から、実際に baseline へ入れる値を決める。逆算は core.js に閉じる。 */
+function resolvedStocktake() {
+  const date = $('stDate').value || TODAY;
+  const target = stocktakeTarget();
+  const hourlyUsedMinutes = Math.round(Number($('stHourly').value || 0) * 60);
+  const statutoryTakenDays = Math.round(Number($('stStatutory').value || 0) * 2) / 2;
+  if (stMode !== 'planned') {
+    return {
+      baseline: { date, ...target, hourlyUsedMinutes, statutoryTakenDays },
+      addBackMinutes: 0, plannedCount: 0, beyondHorizonCount: 0, exact: true, mode: 'now',
+    };
+  }
+  const r = baselineFromPlannedTarget({
+    date, target, history: state.history, hourlyUsedMinutes, statutoryTakenDays,
+  });
+  return { ...r, mode: 'planned' };
+}
+
+let stPreviewLines = [];
+
 function previewStocktake() {
-  const b = stocktakeValues();
-  const after = replay({ ...state, baseline: b, history: state.history }, TODAY);
-  $('stPreview').textContent =
+  const r = resolvedStocktake();
+  const after = replay({ ...state, baseline: r.baseline, history: state.history }, TODAY);
+  const head =
     '現在 残' + formatBalance(view.asOf.totalMinutes, view.asOf.bankMinutes) +
     ' → 実行後 残' + formatBalance(after.asOf.totalMinutes, after.asOf.bankMinutes);
+  const notes = [];
+  if (r.mode === 'planned') {
+    // 足し戻した量を必ず見せる。予定を記録する前に実行すると 0件 になり、会社の数字が
+    // そのまま今日の残として入ってしまうため、その取り違えを画面で気づけるようにする。
+    notes.push(
+      r.plannedCount === 0
+        ? '⚠️ 登録済みの予定が0件です。この数字がそのまま今日の残になります'
+        : '登録済みの予定 ' + r.plannedCount + '件（＋' + formatLeaveAmount(r.addBackMinutes) + '）を足し戻しました'
+    );
+    if (r.plannedCount > 0) {
+      notes.push(
+        '予定を引くと 残' +
+          formatBalance(after.projected.totalMinutes, after.projected.bankMinutes) +
+          ' ← 会社の表示と一致するか確認'
+      );
+    }
+    if (!r.exact) {
+      notes.push('⚠️ 日と時間の分かれ方を再現できませんでした（量は合っています）');
+    }
+    if (r.beyondHorizonCount > 0) {
+      notes.push('4月以降の予定 ' + r.beyondHorizonCount + '件は足し戻していません');
+    }
+  }
+  stPreviewLines = [head, ...notes];
+  $('stPreview').innerHTML =
+    esc(head) +
+    (notes.length
+      ? '<small class="muted" style="display:block;font-weight:400;margin-top:5px;line-height:1.5">' +
+        notes.map(esc).join('<br>') + '</small>'
+      : '');
 }
+
+$('stModeChips').onclick = (ev) => {
+  const b = ev.target.closest('.chip');
+  if (!b) return;
+  stMode = b.dataset.mode;
+  setPressed($('stModeChips'), (x) => x === b);
+  $('stModeHint').textContent = ST_MODE_HINT[stMode];
+  stPrefill();          // 意味が変わるので、その意味での現在値へ入れ替える
+  previewStocktake();
+};
 
 for (const id of ['stDate', 'stCurrent', 'stCurrentH', 'stCarry', 'stCarryH', 'stHourly']) {
   $(id).oninput = previewStocktake;
 }
 
 $('stApply').onclick = () => {
-  const b = stocktakeValues();
-  if (!confirm('残高を上書きします。よろしいですか？\n\n' + $('stPreview').textContent)) return;
+  const b = resolvedStocktake().baseline;
+  if (!confirm('残高を上書きします。よろしいですか？\n\n' + stPreviewLines.join('\n'))) return;
   state.prevBaseline = state.baseline;
   state.baseline = b;
   save();
